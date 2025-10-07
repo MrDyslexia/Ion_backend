@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transcripción de Audio en Tiempo Real</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.8;
+            font-size: 1.1em;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .status {
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            text-align: center;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 2px solid #c3e6cb;
+        }
+
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 2px solid #f5c6cb;
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 15px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        #startBtn {
+            background: #28a745;
+            color: white;
+        }
+
+        #startBtn:hover:not(:disabled) {
+            background: #218838;
+            transform: translateY(-2px);
+        }
+
+        #stopBtn {
+            background: #dc3545;
+            color: white;
+        }
+
+        #stopBtn:hover:not(:disabled) {
+            background: #c82333;
+            transform: translateY(-2px);
+        }
+
+        .transcription-section {
+            margin-bottom: 30px;
+        }
+
+        .transcription-section h3 {
+            margin-bottom: 15px;
+            color: #2c3e50;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        #transcription {
+            border: 2px solid #e9ecef;
+            border-radius: 10px;
+            padding: 20px;
+            min-height: 150px;
+            max-height: 300px;
+            overflow-y: auto;
+            background: #f8f9fa;
+            line-height: 1.6;
+        }
+
+        .interim {
+            color: #6c757d;
+            font-style: italic;
+            background: #fff3cd;
+            padding: 5px 10px;
+            border-radius: 5px;
+            display: inline-block;
+            margin: 2px 0;
+        }
+
+        .final {
+            color: #155724;
+            background: #d4edda;
+            padding: 8px 15px;
+            border-radius: 8px;
+            margin: 5px 0;
+            border-left: 4px solid #28a745;
+            animation: fadeIn 0.5s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .stats {
+            background: #e9ecef;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+        }
+
+        .stats h4 {
+            margin-bottom: 15px;
+            color: #495057;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .stat-item {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        .stat-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #495057;
+        }
+
+        .stat-label {
+            font-size: 0.9em;
+            color: #6c757d;
+            margin-top: 5px;
+        }
+
+        .visualizer {
+            width: 100%;
+            height: 80px;
+            background: #2c3e50;
+            border-radius: 8px;
+            margin: 20px 0;
+            overflow: hidden;
+        }
+
+        #audioVisualizer {
+            width: 100%;
+            height: 100%;
+        }
+
+        .instructions {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 20px 0;
+            color: #856404;
+        }
+
+        .instructions h4 {
+            margin-bottom: 10px;
+        }
+
+        .instructions ul {
+            margin-left: 20px;
+        }
+
+        .instructions li {
+            margin: 5px 0;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                margin: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+            
+            button {
+                padding: 12px 20px;
+                font-size: 14px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎤 Transcripción en Tiempo Real</h1>
+            <p>Habla y ve tu voz convertida en texto instantáneamente</p>
+        </div>
+
+        <div class="content">
+            <div id="status" class="status disconnected">
+                🔴 Desconectado del servidor
+            </div>
+
+            <div class="instructions">
+                <h4>💡 Instrucciones:</h4>
+                <ul>
+                    <li>1. Asegúrate de permitir el acceso al micrófono</li>
+                    <li>2. Haz clic en "Iniciar Grabación"</li>
+                    <li>3. Comienza a hablar claramente</li>
+                    <li>4. Ve la transcripción en tiempo real</li>
+                    <li>5. Haz clic en "Detener Grabación" cuando termines</li>
+                </ul>
+            </div>
+
+            <div class="controls">
+                <button id="startBtn" onclick="startRecording()">
+                    🎤 Iniciar Grabación
+                </button>
+                <button id="stopBtn" onclick="stopRecording()" disabled>
+                    ⏹️ Detener Grabación
+                </button>
+            </div>
+
+            <div class="visualizer">
+                <canvas id="audioVisualizer"></canvas>
+            </div>
+
+            <div class="transcription-section">
+                <h3>📝 Transcripción en Tiempo Real</h3>
+                <div id="transcription"></div>
+            </div>
+
+            <div class="stats">
+                <h4>📊 Estadísticas</h4>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value" id="statConnections">0</div>
+                        <div class="stat-label">Conexiones activas</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="statChunks">0</div>
+                        <div class="stat-label">Chunks de audio</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="statDuration">0s</div>
+                        <div class="stat-label">Duración</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="statTranscriptions">0</div>
+                        <div class="stat-label">Transcripciones</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        let socket;
+        let mediaRecorder;
+        let audioContext;
+        let analyser;
+        let canvasCtx;
+        let stream;
+        let isRecording = false;
+        let animationId;
+
+        // Configuración de audio
+        const SAMPLE_RATE = 16000;
+        const CHUNK_SIZE = 4096;
+
+        function connectSocket() {
+            socket = io();
+
+            socket.on('connected', (data) => {
+                updateStatus('connected', '✅ Conectado al servidor - Listo para grabar');
+                console.log('Conectado al servidor:', data);
+            });
+
+            socket.on('transcription', (data) => {
+                displayTranscription(data.text, data.isFinal);
+                console.log('Transcripción recibida:', data);
+            });
+
+            socket.on('server_stats', (data) => {
+                updateStats(data);
+            });
+
+            socket.on('audio_ack', (data) => {
+                console.log('Confirmación de audio:', data);
+            });
+
+            socket.on('audio_error', (data) => {
+                console.error('Error de audio:', data);
+                alert('Error de audio: ' + data.error);
+            });
+
+            socket.on('transcription_error', (data) => {
+                console.error('Error de transcripción:', data);
+            });
+
+            socket.on('disconnect', () => {
+                updateStatus('disconnected', '🔴 Desconectado del servidor');
+                stopRecording();
+            });
+
+            socket.on('connect_error', (error) => {
+                console.error('Error de conexión:', error);
+                updateStatus('disconnected', '🔴 Error de conexión al servidor');
+            });
+        }
+
+        function updateStatus(status, message) {
+            const statusElement = document.getElementById('status');
+            statusElement.className = `status ${status}`;
+            statusElement.innerHTML = message;
+        }
+
+        function updateStats(data) {
+            document.getElementById('statConnections').textContent = data.activeConnections;
+            document.getElementById('statChunks').textContent = data.chunksReceived;
+            document.getElementById('statDuration').textContent = Math.round(data.duration / 1000) + 's';
+            document.getElementById('statTranscriptions').textContent = data.totalTranscriptions;
+        }
+
+        function displayTranscription(text, isFinal) {
+            const transcriptionDiv = document.getElementById('transcription');
+            
+            if (isFinal) {
+                // Crear elemento final
+                const finalElement = document.createElement('div');
+                finalElement.className = 'final';
+                finalElement.textContent = text;
+                transcriptionDiv.appendChild(finalElement);
+                
+                // Limpiar elementos parciales
+                const interimElements = transcriptionDiv.getElementsByClassName('interim');
+                while (interimElements.length > 0) {
+                    interimElements[0].remove();
+                }
+            } else {
+                // Actualizar o crear elemento parcial
+                let interimElement = transcriptionDiv.querySelector('.interim');
+                if (!interimElement) {
+                    interimElement = document.createElement('div');
+                    interimElement.className = 'interim';
+                    transcriptionDiv.appendChild(interimElement);
+                }
+                interimElement.textContent = text;
+            }
+            
+            // Auto-scroll al final
+            transcriptionDiv.scrollTop = transcriptionDiv.scrollHeight;
+        }
+
+        async function startRecording() {
+            try {
+                console.log('Solicitando acceso al micrófono...');
+                
+                // Solicitar acceso al micrófono
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        sampleRate: SAMPLE_RATE,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    },
+                    video: false
+                });
+
+                console.log('Micrófono accedido correctamente');
+
+                // Configurar AudioContext
+                audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+                const source = audioContext.createMediaStreamSource(stream);
+                
+                // Configurar analizador para visualización
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                source.connect(analyser);
+                
+                // Configurar canvas para visualización
+                const canvas = document.getElementById('audioVisualizer');
+                canvasCtx = canvas.getContext('2d');
+                canvas.width = canvas.offsetWidth;
+                canvas.height = canvas.offsetHeight;
+                
+                // Iniciar visualización
+                visualizeAudio();
+
+                // Configurar procesador de audio
+                const processor = audioContext.createScriptProcessor(CHUNK_SIZE, 1, 1);
+                
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+                
+                processor.onaudioprocess = (e) => {
+                    if (!isRecording || !socket || !socket.connected) return;
+                    
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    const pcmData = convertFloat32ToInt16(inputData);
+                    
+                    // Enviar chunk al servidor
+                    socket.emit('audio_chunk', {
+                        chunk: Array.from(pcmData)
+                    });
+                };
+
+                // Actualizar UI
+                isRecording = true;
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+                updateStatus('connected', '🎙️ Grabando... Habla ahora');
+
+                // Notificar al servidor
+                socket.emit('start_recording');
+
+                console.log('Grabación iniciada correctamente');
+
+            } catch (error) {
+                console.error('Error al acceder al micrófono:', error);
+                updateStatus('disconnected', '❌ Error al acceder al micrófono');
+                alert('No se pudo acceder al micrófono. Asegúrate de permitir el acceso y que el micrófono esté funcionando.\n\nError: ' + error.message);
+            }
+        }
+
+        function stopRecording() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+            if (audioContext) {
+                audioContext.close();
+            }
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+            }
+            
+            if (socket) {
+                socket.emit('stop_recording');
+                socket.emit('get_final_transcription');
+            }
+
+            isRecording = false;
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            updateStatus('connected', '✅ Conectado - Listo para grabar');
+
+            // Limpiar visualizador
+            const canvas = document.getElementById('audioVisualizer');
+            canvasCtx = canvas.getContext('2d');
+            canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+
+            console.log('Grabación detenida');
+        }
+
+        function convertFloat32ToInt16(buffer) {
+            const length = buffer.length;
+            const int16Array = new Int16Array(length);
+            for (let i = 0; i < length; i++) {
+                // Convertir de float32 (-1 to 1) a int16 (-32768 to 32767)
+                const sample = Math.max(-1, Math.min(1, buffer[i]));
+                int16Array[i] = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+            }
+            return int16Array;
+        }
+
+        function visualizeAudio() {
+            if (!isRecording || !analyser) return;
+
+            const canvas = document.getElementById('audioVisualizer');
+            const width = canvas.width;
+            const height = canvas.height;
+            
+            animationId = requestAnimationFrame(visualizeAudio);
+
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            analyser.getByteFrequencyData(dataArray);
+
+            canvasCtx.fillStyle = 'rgb(20, 20, 20)';
+            canvasCtx.fillRect(0, 0, width, height);
+
+            const barWidth = (width / bufferLength) * 2.5;
+            let barHeight;
+            let x = 0;
+
+            for (let i = 0; i < bufferLength; i++) {
+                barHeight = (dataArray[i] / 255) * height;
+
+                const gradient = canvasCtx.createLinearGradient(0, height - barHeight, 0, height);
+                gradient.addColorStop(0, '#667eea');
+                gradient.addColorStop(1, '#764ba2');
+
+                canvasCtx.fillStyle = gradient;
+                canvasCtx.fillRect(x, height - barHeight, barWidth, barHeight);
+
+                x += barWidth + 1;
+            }
+        }
+
+        // Conectar al servidor cuando se carga la página
+        window.addEventListener('load', () => {
+            connectSocket();
+            console.log('Cliente inicializado, listo para conectar...');
+        });
+
+        // Manejar cierre de página
+        window.addEventListener('beforeunload', () => {
+            stopRecording();
+            if (socket) {
+                socket.close();
+            }
+        });
+    </script>
+</body>
+</html>
