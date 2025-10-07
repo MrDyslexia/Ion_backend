@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Socket.io Test Client</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+    <h1>Socket.io Test Client</h1>
+    <button onclick="connect()">Conectar</button>
+    <button onclick="sendTest()">Enviar Test</button>
+    <button onclick="disconnect()">Desconectar</button>
+    
+    <div id="status">Desconectado</div>
+    <div id="logs" style="background: black; color: white; padding: 10px; height: 300px; overflow-y: scroll;"></div>
+
+    <script>
+        let socket = null;
+        const logs = document.getElementById('logs');
+        const status = document.getElementById('status');
+
+        function addLog(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            logs.innerHTML = `[${timestamp}] ${message}<br>` + logs.innerHTML;
+            console.log(message);
+        }
+
+        function connect() {
+            socket = io('http://localhost:3000');
+            
+            socket.on('connect', () => {
+                addLog('✅ CONECTADO - Socket ID: ' + socket.id);
+                status.textContent = 'Conectado - ' + socket.id;
+                status.style.color = 'green';
+            });
+            
+            socket.on('connected', (data) => {
+                addLog('📋 Configuración: ' + JSON.stringify(data));
+            });
+            
+            socket.on('audio_ack', (data) => {
+                addLog('📨 ACK: ' + JSON.stringify(data));
+            });
+            
+            socket.on('server_stats', (data) => {
+                addLog('📊 Stats: ' + JSON.stringify(data));
+            });
+            
+            socket.on('disconnect', () => {
+                addLog('🔴 DESCONECTADO');
+                status.textContent = 'Desconectado';
+                status.style.color = 'red';
+            });
+            
+            socket.on('error', (error) => {
+                addLog('❌ ERROR: ' + error);
+            });
+        }
+
+        function sendTest() {
+            if (!socket || !socket.connected) {
+                addLog('⚠️ No conectado');
+                return;
+            }
+            
+            const testData = {
+                chunk: 'audio_chunk_test_' + Date.now(),
+                timestamp: Date.now()
+            };
+            
+            socket.emit('audio_chunk', testData);
+            addLog('📤 Enviando: ' + JSON.stringify(testData));
+        }
+
+        function disconnect() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+            }
+        }
+
+        // Auto-conectar al cargar
+        window.onload = connect;
+    </script>
+</body>
+</html>
