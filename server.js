@@ -1,10 +1,12 @@
+// Cargar variables de entorno desde .env
+require('dotenv').config();
+
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const wav = require('wav');
 const fs = require('fs');
 const path = require('path');
-require('dotenv').config();
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
