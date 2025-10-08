@@ -5,8 +5,8 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 const modelsDir = path.join(__dirname, 'models');
-const modelUrl = 'https://alphacephei.com/vosk/models/vosk-model-small-es-0.42.zip';
-const modelPath = path.join(modelsDir, 'vosk-model-small-es-0.42.zip');
+const modelUrl = 'https://alphacephei.com/vosk/models/vosk-model-es-0.42.zip';
+const modelPath = path.join(modelsDir, 'vosk-model-es-0.42.zip');
 const extractPath = path.join(modelsDir);
 
 function downloadModel() {
@@ -17,7 +17,7 @@ function downloadModel() {
     fs.mkdirSync(modelsDir, { recursive: true });
   }
 
-  if (fs.existsSync(path.join(extractPath, 'vosk-model-small-es-0.42'))) {
+  if (fs.existsSync(path.join(extractPath, 'vosk-model-es-0.42'))) {
     console.log('✅ Modelo ya existe, omitiendo descarga');
     return;
   }
@@ -63,11 +63,11 @@ function extractModel() {
     }
     
     // Verificar extracción
-    if (fs.existsSync(path.join(extractPath, 'vosk-model-small-es-0.42'))) {
+    if (fs.existsSync(path.join(extractPath, 'vosk-model-es-0.42'))) {
       // Eliminar archivo zip
       fs.unlinkSync(modelPath);
       console.log('✅ Modelo extraído y listo para usar');
-      console.log(`📁 Ruta del modelo: ${path.join(extractPath, 'vosk-model-small-es-0.42')}`);
+      console.log(`📁 Ruta del modelo: ${path.join(extractPath, 'vosk-model-es-0.42')}`);
     } else {
       throw new Error('La extracción falló');
     }
@@ -80,9 +80,9 @@ function extractModel() {
 function manualDownloadInstructions() {
   console.log('\n💡 Instrucciones para descarga manual:');
   console.log('1. Ve a: https://alphacephei.com/vosk/models');
-  console.log('2. Descarga: vosk-model-small-es-0.42.zip');
-  console.log('3. Extrae el contenido en:', path.join(modelsDir, 'vosk-model-small-es-0.42'));
-  console.log('4. La estructura debe ser: models/vosk-model-small-es-0.42/am/final.mdl etc.');
+  console.log('2. Descarga: vosk-model-es-0.42.zip');
+  console.log('3. Extrae el contenido en:', path.join(modelsDir, 'vosk-model-es-0.42'));
+  console.log('4. La estructura debe ser: models/vosk-model-es-0.42/am/final.mdl etc.');
 }
 
 downloadModel();
