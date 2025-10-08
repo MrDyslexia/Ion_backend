@@ -60,7 +60,7 @@ const initializeVosk = async () => {
     vosk = await import('vosk');
     
     // Verificar si el modelo existe
-    const modelPath = path.join(modelsDir, 'vosk-model-small-es-0.42');
+    const modelPath = path.join(modelsDir, 'vosk-model-es-0.42');
     if (!fs.existsSync(modelPath)) {
       console.log('📥 Modelo de Vosk no encontrado.');
       console.log('⚠️  Por favor descarga el modelo manualmente:');
