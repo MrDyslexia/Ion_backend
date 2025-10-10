@@ -1,318 +1,401 @@
-// Cargar variables de entorno desde .env
+// server.js (CommonJS, con IA local via Ollama)
+// Cargar variables de entorno
 require('dotenv').config();
 
-const express = require('express');
-const http = require('http');
+const express  = require('express');
+const http     = require('http');
 const socketIo = require('socket.io');
-const wav = require('wav');
-const fs = require('fs');
-const path = require('path');
+const wav      = require('wav');
+const fs       = require('fs');
+const path     = require('path');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
+const io = socketIo(server, { cors: { origin: "*", methods: ["GET","POST"] } });
 
-// Middleware para servir archivos estáticos
 app.use(express.static('public'));
 
-// Ruta de prueba
-app.get('/test', (req, res) => {
-  res.json({ status: 'Server running', timestamp: new Date().toISOString() });
-});
-
-// Almacenar estadísticas y streams activos
-const stats = {
-  totalConnections: 0,
-  activeConnections: 0,
-  totalAudioChunks: 0,
-  totalTranscriptions: 0
-};
-
-const audioDir = path.join(__dirname, 'audio');
+// ------------------- Stats y carpetas -------------------
+const stats = { totalConnections:0, activeConnections:0, totalAudioChunks:0, totalTranscriptions:0 };
+const audioDir  = path.join(__dirname, 'audio');
 const modelsDir = path.join(__dirname, 'models');
+if (!fs.existsSync(audioDir))  fs.mkdirSync(audioDir,  { recursive:true });
+if (!fs.existsSync(modelsDir)) fs.mkdirSync(modelsDir, { recursive:true });
 
-if (!fs.existsSync(audioDir)) {
-  fs.mkdirSync(audioDir, { recursive: true });
-  console.log(`📁 Created directory: ${audioDir}`);
-}
-
-if (!fs.existsSync(modelsDir)) {
-  fs.mkdirSync(modelsDir, { recursive: true });
-  console.log(`📁 Created directory: ${modelsDir}`);
-}
-
-// Configuración de Vosk
+// ------------------- Vosk -------------------
 let vosk = null;
 let voskModel = null;
 let isVoskReady = false;
 
-// Función para inicializar Vosk
 const initializeVosk = async () => {
   try {
     console.log('🔄 Inicializando Vosk...');
-    
-    // Importar Vosk
     vosk = await import('vosk');
-    
-    // Verificar si el modelo existe
     const modelPath = path.join(modelsDir, 'vosk-model-es-0.42');
     if (!fs.existsSync(modelPath)) {
-      console.log('📥 Modelo de Vosk no encontrado.');
-      console.log('⚠️  Por favor descarga el modelo manualmente:');
-      console.log('🔗 https://alphacephei.com/vosk/models');
-      console.log('📁 Colócalo en:', modelPath);
+      console.log('⚠️  Modelo Vosk no encontrado en', modelPath);
       return false;
     }
-
     console.log('📖 Cargando modelo Vosk...');
     voskModel = new vosk.Model(modelPath);
     isVoskReady = true;
-    console.log('✅ Vosk inicializado correctamente');
-    console.log('🎤 Listo para transcripciones en tiempo real');
-    console.log('=' .repeat(50));
+    console.log('✅ Vosk inicializado');
     return true;
-  } catch (error) {
-    console.error('❌ Error inicializando Vosk:', error);
+  } catch (e) {
+    console.error('❌ Error inicializando Vosk:', e);
     return false;
   }
 };
 
-// Almacenar reconocedores por socket
-const recognizers = new Map();
+// ------------------- IA local (Ollama) -------------------
+const LLM_BASE_URL = process.env.LLM_BASE_URL || 'http://localhost:11434';
+const LLM_MODEL    = process.env.LLM_MODEL    || 'qwen2.5:7b-instruct';
+const LLM_SYSTEM   = process.env.LLM_SYSTEM_PROMPT || 'Eres un asistente útil en español. Responde de forma conversacional y natural.';
+const LLM_MAX_TOK  = parseInt(process.env.LLM_MAX_TOKENS || '512', 10);
 
-// Función para mostrar transcripción en consola con colores
-function displayTranscription(socketId, text, isFinal = false, confidence = 0) {
-  const timestamp = new Date().toLocaleTimeString();
-  const socketShort = socketId.substring(0, 8);
-  const status = isFinal ? 'FINAL' : 'PARCIAL';
-  const color = isFinal ? '\x1b[32m' : '\x1b[33m'; // Verde para final, Amarillo para parcial
-  const reset = '\x1b[0m';
-  
-  console.log(`${color}[${timestamp}] ${socketShort} [${status}]${reset}: ${text}`);
-  
-  if (isFinal && confidence > 0) {
-    console.log(`${color}   Confianza: ${(confidence * 100).toFixed(1)}%${reset}`);
-  }
-}
+// Llama a Ollama con /api/chat en modo streaming (NDJSON) y reenvía chunks al cliente
+async function askLocalLLM(socket, dialog) {
+  socket.emit('assistant_status', { status: 'thinking' });
 
-io.on('connection', (socket) => {
-  stats.totalConnections++;
-  stats.activeConnections++;
-  
-  console.log(`\n✅ Cliente conectado: ${socket.id}`);
-  console.log(`📊 Conexiones activas: ${stats.activeConnections}`);
-
-  // Crear archivo único para este stream
-  const filename = path.join(audioDir, `audio_${socket.id}_${Date.now()}.wav`);
-  const writer = new wav.FileWriter(filename, {
-    sampleRate: 16000,
-    channels: 1,
-    bitDepth: 16
-  });
-
-  let chunksReceived = 0;
-  let firstChunkTime = null;
-  let transcriptionBuffer = [];
-  let lastPartialText = '';
-
-  // Configurar reconocedor Vosk para este socket
-  const setupVoskRecognizer = () => {
-    if (!isVoskReady || !voskModel) {
-      console.warn('⚠️ Vosk no está listo, ignorando transcripción');
-      return null;
-    }
-
-    try {
-      // Crear reconocedor con la API correcta
-      const rec = new vosk.Recognizer({
-        model: voskModel,
-        sampleRate: 16000
-      });
-
-      recognizers.set(socket.id, rec);
-      console.log(`🎤 Reconocedor Vosk creado para: ${socket.id}`);
-      return rec;
-    } catch (error) {
-      console.error('❌ Error creando reconocedor Vosk:', error);
-      return null;
+  const body = {
+    model: LLM_MODEL,
+    messages: [{ role: 'system', content: LLM_SYSTEM }, ...dialog],
+    stream: true,
+    options: {
+      num_predict: LLM_MAX_TOK,
+      temperature: 0.7,
+      top_p: 0.9
     }
   };
 
-  const recognizer = setupVoskRecognizer();
+  const resp = await fetch(`${LLM_BASE_URL}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type':'application/json' },
+    body: JSON.stringify(body)
+  });
 
-  // Enviar estadísticas periódicamente
+  if (!resp.ok || !resp.body) {
+    const msg = `LLM error: ${resp.status} ${resp.statusText}`;
+    socket.emit('assistant_error', { error: msg });
+    throw new Error(msg);
+  }
+
+  const reader  = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let full = '';
+
+  // stream NDJSON → emitir chunks
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream:true });
+
+    let idx;
+    while ((idx = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      if (!line) continue;
+
+      let data;
+      try { data = JSON.parse(line); } catch { continue; }
+
+      if (data.message?.content) {
+        const delta = data.message.content;
+        full += delta;
+        socket.emit('assistant_text', { delta });
+      }
+      if (data.done) {
+        socket.emit('assistant_text_done', { text: full });
+      }
+    }
+  }
+
+  return; // el texto completo ya fue enviado en assistant_text_done
+}
+
+// ------------------- Ayudantes -------------------
+const recognizers = new Map(); // socketId -> rec
+const sessions = new Map();    // socketId -> { dialog:[], userBuffer:'', ... }
+
+function displayTranscription(socketId, text, isFinal=false, confidence=0) {
+  const t = new Date().toLocaleTimeString();
+  console.log(`${isFinal?'\x1b[32m':'\x1b[33m'}[${t}] ${socketId.slice(0,8)} ${isFinal?'[FINAL]':'[PARCIAL]'}: ${text}${isFinal && confidence?` (${(confidence*100).toFixed(1)}% conf)`:''}\x1b[0m`);
+}
+
+// ------------------- Detección de Comandos por Voz -------------------
+function processVoiceCommands(text, socketId) {
+  const normalizedText = text.toLowerCase().trim();
+  const session = sessions.get(socketId);
+  
+  if (!session) return { isCommand: false, action: null };
+  
+  // Comando de activación: "hola alma"
+  if (normalizedText.includes('hola alma') && !session.conversationActive) {
+    console.log(`🎯 Comando ACTIVACIÓN detectado: "hola alma" en sesión ${socketId}`);
+    
+    // Extraer la pregunta después del comando
+    const question = normalizedText.replace('hola alma', '').trim();
+    
+    session.conversationActive = true;
+    session.userBuffer = question || '';
+    
+    return { 
+      isCommand: true, 
+      action: 'start_conversation',
+      question: question
+    };
+  }
+  
+  // Comandos de desactivación
+  const stopCommands = ['gracias alma', 'detente alma', 'adiós alma', 'hasta luego alma'];
+  for (const cmd of stopCommands) {
+    if (normalizedText.includes(cmd) && session.conversationActive) {
+      console.log(`🛑 Comando STOP detectado: "${cmd}" en sesión ${socketId}`);
+      session.conversationActive = false;
+      session.userBuffer = '';
+      
+      return { 
+        isCommand: true, 
+        action: 'stop_conversation',
+        command: cmd
+      };
+    }
+  }
+  
+  // Si la conversación está activa, acumular texto normal
+  if (session.conversationActive && normalizedText) {
+    session.userBuffer += (session.userBuffer ? ' ' : '') + normalizedText;
+    return { isCommand: false, action: 'continue_conversation' };
+  }
+  
+  return { isCommand: false, action: null };
+}
+
+// ------------------- Socket.IO -------------------
+io.on('connection', (socket) => {
+  stats.totalConnections++; stats.activeConnections++;
+  console.log(`\n✅ Cliente conectado: ${socket.id} | Activos: ${stats.activeConnections}`);
+
+  // WAV para esta conexión
+  const filename = path.join(audioDir, `audio_${socket.id}_${Date.now()}.wav`);
+  const writer = new wav.FileWriter(filename, { sampleRate:16000, channels:1, bitDepth:16 });
+
+  // Sesión para diálogo
+  const sess = { 
+    dialog: [], 
+    userBuffer: '', 
+    conversationActive: false,  // Nueva propiedad para controlar estado conversacional
+    startedAt: Date.now() 
+  };
+  sessions.set(socket.id, sess);
+
+  // Vosk recognizer
+  let rec = null;
+  if (isVoskReady && voskModel) {
+    try {
+      rec = new vosk.Recognizer({ model: voskModel, sampleRate: 16000 });
+      rec.setWords(true);
+      recognizers.set(socket.id, rec);
+      console.log(`🎤 Reconocedor Vosk creado para: ${socket.id}`);
+    } catch (e) {
+      console.error('❌ Error creando reconocedor Vosk:', e);
+    }
+  }
+
+  // Stats de sesión
+  let chunksReceived = 0;
+  let firstChunkTime = null;
+  let lastPartial = '';
+
   const statsInterval = setInterval(() => {
     socket.emit('server_stats', {
       activeConnections: stats.activeConnections,
-      chunksReceived: chunksReceived,
-      duration: firstChunkTime ? Date.now() - firstChunkTime : 0,
+      chunksReceived,
+      duration: firstChunkTime ? Date.now()-firstChunkTime : 0,
       totalTranscriptions: stats.totalTranscriptions,
-      voskReady: isVoskReady
+      voskReady: isVoskReady,
+      conversationActive: sess.conversationActive // Enviar estado de conversación
     });
   }, 2000);
 
+  // ---- Audio entrante ----
   socket.on('audio_chunk', (data) => {
     try {
-      if (!firstChunkTime) {
-        firstChunkTime = Date.now();
-        console.log(`\n🎙️  Iniciando captura de audio de: ${socket.id}`);
-      }
+      if (!firstChunkTime) firstChunkTime = Date.now();
+      chunksReceived++; stats.totalAudioChunks++;
 
-      chunksReceived++;
-      stats.totalAudioChunks++;
-
-      // Convertir a Buffer (asumiendo que viene como array de números)
+      // array de int16 (como ya envías desde el front)
       const audioData = new Int16Array(data.chunk);
       const audioChunk = Buffer.from(audioData.buffer);
 
-      // Escribir chunk al archivo WAV
+      // Guardar WAV completo
       writer.write(audioChunk);
 
-      // Procesar transcripción en tiempo real
-      if (isVoskReady && recognizer) {
-        try {
-          // Procesar el audio chunk por chunk para mejor tiempo real
-          const result = recognizer.acceptWaveform(audioChunk);
-          
-          if (result) {
-            // Resultado final
-            const transcription = recognizer.result();
-            if (transcription.text && transcription.text.trim() !== '') {
-              const transcriptionData = {
-                text: transcription.text,
-                isFinal: true,
-                confidence: transcription.confidence || 0,
-                result: transcription
-              };
+      // Transcripción
+      if (isVoskReady && rec) {
+        const isFinal = rec.acceptWaveform(audioChunk);
 
-              // Mostrar en consola
-              displayTranscription(socket.id, transcription.text, true, transcription.confidence);
+        if (isFinal) {
+          const r = rec.result();
+          const txt = (r.text || '').trim();
+          if (txt) {
+            displayTranscription(socket.id, txt, true, r.confidence || 0);
+            socket.emit('transcription', { 
+              text: txt, 
+              isFinal: true, 
+              confidence: r.confidence || 0 
+            });
 
-              socket.emit('transcription', transcriptionData);
-
-              stats.totalTranscriptions++;
-              transcriptionBuffer.push({
-                text: transcription.text,
-                timestamp: new Date().toISOString(),
-                confidence: transcription.confidence || 0
+            // 🆕 PROCESAMIENTO MEJORADO DE COMANDOS
+            const commandResult = processVoiceCommands(txt, socket.id);
+            
+            if (commandResult.isCommand) {
+              console.log(`🎯 Comando procesado: ${commandResult.action} para ${socket.id}`);
+              
+              // Emitir evento de comando detectado al frontend
+              socket.emit('voice_command_detected', {
+                action: commandResult.action,
+                command: commandResult.command || 'hola alma',
+                text: txt
               });
-
-              // Limpiar texto parcial anterior
-              lastPartialText = '';
+              
+              // Si es comando de inicio y hay texto, procesar con IA
+              if (commandResult.action === 'start_conversation' && sess.userBuffer.trim()) {
+                setTimeout(async () => {
+                  try {
+                    console.log(`🤖 Iniciando conversación con: "${sess.userBuffer}"`);
+                    sess.dialog.push({ role: 'user', content: sess.userBuffer });
+                    await askLocalLLM(socket, sess.dialog);
+                    // No limpiamos userBuffer aquí para continuar la conversación
+                  } catch (e) {
+                    console.error('💥 Error en respuesta automática IA:', e);
+                  }
+                }, 500);
+              }
+              // Si es comando de stop, limpiar buffer
+              else if (commandResult.action === 'stop_conversation') {
+                sess.userBuffer = '';
+              }
+            } 
+            // Si no es comando pero la conversación está activa, procesar con IA
+            else if (sess.conversationActive && txt.trim() && !commandResult.isCommand) {
+              console.log(`💬 Continuando conversación: "${txt}"`);
+              setTimeout(async () => {
+                try {
+                  sess.dialog.push({ role: 'user', content: txt });
+                  await askLocalLLM(socket, sess.dialog);
+                } catch (e) {
+                  console.error('💥 Error en respuesta conversacional IA:', e);
+                }
+              }, 500);
+            }
+            // Comportamiento normal (sin conversación activa)
+            else if (!sess.conversationActive) {
+              sess.userBuffer += (sess.userBuffer ? ' ' : '') + txt;
             }
           }
-          
-          // Siempre obtener resultado parcial para tiempo real
-          const partial = recognizer.partialResult();
-          if (partial.partial && partial.partial.trim() !== '' && partial.partial !== lastPartialText) {
-            const partialData = {
-              text: partial.partial,
-              isFinal: false,
-              confidence: 0
-            };
-
-            // Mostrar en consola (solo si cambió)
-            displayTranscription(socket.id, partial.partial, false);
-            
-            socket.emit('transcription', partialData);
-            lastPartialText = partial.partial;
+        } else {
+          const p = rec.partialResult();
+          const partial = (p.partial || '').trim();
+          if (partial && partial !== lastPartial) {
+            lastPartial = partial;
+            displayTranscription(socket.id, partial, false);
+            socket.emit('transcription', { text: partial, isFinal:false, confidence: 0 });
           }
-
-        } catch (transcribeError) {
-          console.error('❌ Error en transcripción Vosk:', transcribeError);
         }
       }
 
-      // Mostrar progreso cada 20 chunks
+      // logs
       if (chunksReceived % 20 === 0) {
-        const duration = firstChunkTime ? Date.now() - firstChunkTime : 0;
-        console.log(`📊 ${socket.id}: ${chunksReceived} chunks, ${Math.round(duration/1000)}s`);
+        const dur = firstChunkTime ? Date.now()-firstChunkTime : 0;
+        console.log(`📊 ${socket.id}: ${chunksReceived} chunks, ${Math.round(dur/1000)}s, Conversación: ${sess.conversationActive ? 'ACTIVA' : 'INACTIVA'}`);
       }
 
-      // Enviar confirmación cada 10 chunks
+      // acks
       if (chunksReceived % 10 === 0) {
         socket.emit('audio_ack', {
-          chunksReceived: chunksReceived,
-          totalBytes: writer.bytesWritten,
-          timestamp: Date.now()
+          chunksReceived, 
+          totalBytes: writer.bytesWritten, 
+          timestamp: Date.now(),
+          conversationActive: sess.conversationActive
         });
       }
 
-    } catch (error) {
-      console.error('❌ Error procesando audio:', error);
-      socket.emit('audio_error', { error: error.message });
+    } catch (e) {
+      console.error('❌ Error procesando audio:', e);
+      socket.emit('audio_error', { error: e.message });
     }
   });
 
-  // Evento para forzar transcripción final
+  // Forzar final
   socket.on('get_final_transcription', () => {
-    if (recognizer) {
-      try {
-        const finalResult = recognizer.finalResult();
-        if (finalResult.text && finalResult.text.trim() !== '') {
-          displayTranscription(socket.id, finalResult.text, true, finalResult.confidence);
-          socket.emit('transcription', {
-            text: finalResult.text,
-            isFinal: true,
-            confidence: finalResult.confidence || 0,
-            result: finalResult
-          });
+    if (!rec) return;
+    try {
+      const finalResult = rec.finalResult();
+      const txt = (finalResult.text || '').trim();
+      if (txt) {
+        displayTranscription(socket.id, txt, true, finalResult.confidence || 0);
+        socket.emit('transcription', { text: txt, isFinal:true, confidence: finalResult.confidence || 0 });
+        
+        // Si la conversación está activa, procesar con IA
+        if (sess.conversationActive && txt.trim()) {
+          setTimeout(async () => {
+            try {
+              sess.dialog.push({ role: 'user', content: txt });
+              await askLocalLLM(socket, sess.dialog);
+            } catch (e) {
+              console.error('💥 Error en respuesta final IA:', e);
+            }
+          }, 500);
+        } else {
+          sess.userBuffer += (sess.userBuffer ? ' ' : '') + txt;
         }
-      } catch (error) {
-        console.error('❌ Error obteniendo transcripción final:', error);
+      }
+    } catch (e) {
+      console.error('❌ Error finalResult:', e);
+    }
+  });
+
+  // Inicio / fin de grabación
+  socket.on('start_recording', () => {
+    console.log(`🎙️  start ${socket.id}`);
+    socket.emit('assistant_status', { status:'idle' });
+  });
+
+  socket.on('stop_recording', async () => {
+    console.log(`⏹️  stop  ${socket.id}`);
+    // Al detener: si hay texto del usuario y no hay conversación activa, preguntamos al LLM
+    const question = (sess.userBuffer || '').trim();
+    if (question && !sess.conversationActive) {
+      try {
+        sess.dialog.push({ role:'user', content: question });
+        await askLocalLLM(socket, sess.dialog);
+        socket.emit('assistant_status', { status:'idle' });
+        stats.totalTranscriptions++;
+        sess.userBuffer = '';
+      } catch (e) {
+        console.error('💥 LLM error:', e);
       }
     }
   });
 
-  // Evento cuando el cliente inicia la grabación
-  socket.on('start_recording', () => {
-    console.log(`\n🎙️  Cliente ${socket.id} inició grabación`);
-  });
-
-  // Evento cuando el cliente detiene la grabación
-  socket.on('stop_recording', () => {
-    console.log(`⏹️  Cliente ${socket.id} detuvo grabación`);
-  });
-
+  // Desconexión
   socket.on('disconnect', (reason) => {
     stats.activeConnections--;
-    console.log(`\n🔴 Cliente desconectado: ${socket.id} - Razón: ${reason}`);
-    console.log(`📊 Conexiones activas: ${stats.activeConnections}`);
+    console.log(`\n🔴 Cliente desconectado: ${socket.id} (${reason})`);
 
-    // Finalizar reconocedor Vosk
-    if (recognizer) {
+    // Cerrar Vosk
+    if (rec) {
       try {
-        // Obtener resultado final
-        const finalResult = recognizer.finalResult();
-        if (finalResult.text && finalResult.text.trim() !== '') {
-          const finalTranscription = {
-            text: finalResult.text,
-            isFinal: true,
-            confidence: finalResult.confidence || 0,
-            result: finalResult
-          };
-
-          // Mostrar transcripción final en consola
-          displayTranscription(socket.id, finalResult.text, true, finalResult.confidence);
-
-          socket.emit('transcription', finalTranscription);
-
-          transcriptionBuffer.push({
-            text: finalResult.text,
-            timestamp: new Date().toISOString(),
-            confidence: finalResult.confidence || 0
-          });
+        const fin = rec.finalResult();
+        if (fin.text && fin.text.trim()) {
+          socket.emit('transcription', { text: fin.text, isFinal:true, confidence: fin.confidence || 0 });
+          sess.userBuffer += (sess.userBuffer ? ' ' : '') + fin.text.trim();
         }
-
-        // Liberar recursos
-        recognizer.free();
-      } catch (error) {
-        console.error('❌ Error finalizando reconocedor:', error);
+        rec.free();
+      } catch (e) {
+        console.error('❌ Error liberando Vosk:', e);
       }
       recognizers.delete(socket.id);
     }
@@ -320,46 +403,43 @@ io.on('connection', (socket) => {
     writer.end();
     clearInterval(statsInterval);
 
-    // Guardar transcripción completa
-    if (transcriptionBuffer.length > 0) {
+    // Persistir transcript (dialog con roles + métricas básicas)
+    try {
       const transcriptFile = path.join(audioDir, `transcript_${socket.id}_${Date.now()}.json`);
       fs.writeFileSync(transcriptFile, JSON.stringify({
         socketId: socket.id,
-        startTime: firstChunkTime,
-        endTime: Date.now(),
-        duration: firstChunkTime ? Date.now() - firstChunkTime : 0,
-        chunksReceived: chunksReceived,
-        transcriptions: transcriptionBuffer
+        startedAt: sess.startedAt,
+        endedAt: Date.now(),
+        dialog: sess.dialog,
+        chunksReceived,
+        conversationActive: sess.conversationActive
       }, null, 2));
-      console.log(`\n📄 Transcripción guardada: ${transcriptFile}`);
+      console.log(`📄 Transcripción guardada: ${transcriptFile}`);
+    } catch (e) {
+      console.error('❌ Error guardando transcript:', e);
     }
-
-    // Mostrar resumen final
-    const duration = firstChunkTime ? Date.now() - firstChunkTime : 0;
-    console.log(`\n📊 RESUMEN FINAL ${socket.id}:`);
-    console.log(`   Chunks procesados: ${chunksReceived}`);
-    console.log(`   Duración total: ${Math.round(duration/1000)} segundos`);
-    console.log(`   Transcripciones: ${transcriptionBuffer.length}`);
-    console.log(`   Archivo de audio: ${filename}`);
   });
 
-  socket.on('error', (error) => {
-    console.error(`\n💥 Error en socket ${socket.id}:`, error);
-  });
+  socket.on('error', (e) => console.error(`💥 socket ${socket.id}:`, e));
 
-  // Enviar configuración al cliente
+  // Handshake
   socket.emit('connected', {
     message: 'Conectado al servidor de audio',
     sampleRate: 16000,
     expectedChunkSize: 4096,
     supportsTranscription: isVoskReady,
-    transcriptionEngine: 'Vosk (Offline)'
+    transcriptionEngine: 'Vosk (Offline)',
+    llm: { base: LLM_BASE_URL, model: LLM_MODEL }
   });
 
   console.log(`🎯 Esperando audio de: ${socket.id}`);
 });
 
-// Endpoints adicionales
+// ------------------- Endpoints extra -------------------
+app.get('/test', (req, res) => {
+  res.json({ status: 'Server running', timestamp: new Date().toISOString() });
+});
+
 app.get('/stats', (req, res) => {
   res.json({
     ...stats,
@@ -372,70 +452,50 @@ app.get('/stats', (req, res) => {
 app.get('/transcriptions', (req, res) => {
   try {
     const transcriptFiles = fs.readdirSync(audioDir)
-      .filter(file => file.startsWith('transcript_') && file.endsWith('.json'))
-      .map(file => {
-        const filePath = path.join(audioDir, file);
-        const stats = fs.statSync(filePath);
-        const content = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      .filter(f => f.startsWith('transcript_') && f.endsWith('.json'))
+      .map(f => {
+        const fp = path.join(audioDir, f);
+        const st = fs.statSync(fp);
+        const content = JSON.parse(fs.readFileSync(fp, 'utf8'));
         return {
-          filename: file,
-          created: stats.birthtime,
-          size: stats.size,
-          transcriptions: content.transcriptions.length,
-          duration: content.duration,
-          chunks: content.chunksReceived
+          filename: f,
+          created: st.birthtime,
+          size: st.size,
+          dialogTurns: content.dialog?.length || 0,
+          chunks: content.chunksReceived || 0,
+          conversationActive: content.conversationActive || false
         };
       })
       .sort((a, b) => new Date(b.created) - new Date(a.created))
       .slice(0, 10);
 
     res.json(transcriptFiles);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-// Endpoint para ver una transcripción específica
 app.get('/transcription/:filename', (req, res) => {
   try {
-    const filename = req.params.filename;
-    const filePath = path.join(audioDir, filename);
-    
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'Transcripción no encontrada' });
-    }
-
+    const filePath = path.join(audioDir, req.params.filename);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error:'Transcripción no encontrada' });
     const content = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     res.json(content);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-// Endpoint para ver el estado de Vosk
-app.get('/vosk-status', (req, res) => {
-  res.json({
-    ready: isVoskReady,
-    modelLoaded: !!voskModel,
-    activeRecognizers: recognizers.size
-  });
-});
-
-// Inicializar Vosk al arrancar
-initializeVosk().then(success => {
-  if (success) {
-    console.log('🎤 Vosk listo para transcripciones');
-  } else {
-    console.log('⚠️  Transcripción desactivada - Vosk no disponible');
-  }
+// ------------------- Inicializar y arrancar -------------------
+initializeVosk().then(ok => {
+  console.log(ok ? '🎤 Vosk listo para transcripciones' : '⚠️  Vosk no disponible (transcripción desactivada)');
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Servidor ejecutándose en http://localhost:${PORT}`);
-  console.log(`📊 Endpoint de stats: http://localhost:${PORT}/stats`);
-  console.log(`📝 Endpoint de transcripciones: http://localhost:${PORT}/transcriptions`);
-  console.log(`🎤 Estado de Vosk: http://localhost:${PORT}/vosk-status`);
-  console.log(`🧪 Endpoint de test: http://localhost:${PORT}/test`);
-  console.log('\n🎯 Esperando conexiones de clientes...');
+  console.log(`🚀 Servidor en http://localhost:${PORT}`);
+  console.log(`📊 /stats  📝 /transcriptions  🧪 /test`);
+  console.log(`🎯 Comandos de voz activados:`);
+  console.log(`   - Activación: "hola alma"`);
+  console.log(`   - Desactivación: "gracias alma", "detente alma", "adiós alma", "hasta luego alma"`);
 });
