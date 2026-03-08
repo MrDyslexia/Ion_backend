@@ -5,638 +5,491 @@ const socketIo = require('socket.io');
 const wav      = require('wav');
 const fs       = require('fs');
 const path     = require('path');
+const { initDB, patientOps, sessionOps, messageOps, buildDialog, COMPRESS_THRESHOLD } = require('./db');
 
-const app = express();
+const app    = express();
 const server = http.createServer(app);
-const io = socketIo(server, { cors: { origin: "*", methods: ["GET","POST"] } });
+const io     = socketIo(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
 
-/** ======================= Estado ======================= */
-const activeRecordings = new Map(); // socketId -> { writer, filename, session, completed, hadError }
-const recognizers = new Map();      // socketId -> rec
-const sessions = new Map();         // socketId -> { dialog:[], userBuffer:'', ... }
-
+app.use(express.json());
 app.use(express.static('public'));
-const stats = { totalConnections:0, activeConnections:0, totalAudioChunks:0, totalTranscriptions:0 };
 
+/** ======================= Directorios ======================= */
 const audioDir  = path.join(__dirname, '../audio');
 const modelsDir = path.join(__dirname, 'models');
-if (!fs.existsSync(audioDir))  fs.mkdirSync(audioDir,  { recursive:true });
-if (!fs.existsSync(modelsDir)) fs.mkdirSync(modelsDir, { recursive:true });
+[audioDir, modelsDir].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); });
+
+/** ======================= Config ======================= */
+const SAVE_AUDIO   = process.env.SAVE_AUDIO === 'true';
+const LLM_BASE_URL = process.env.LLM_BASE_URL  || 'http://localhost:11434';
+const LLM_MODEL    = process.env.LLM_MODEL     || 'qwen2.5:7b';
+const LLM_MAX_TOK  = parseInt(process.env.LLM_MAX_TOKENS || '512', 10);
+const TTS_URL      = process.env.TTS_URL        || 'http://localhost:8002';
+const PORT         = parseInt(process.env.PORT  || '3000', 10);
 
 /** ======================= Vosk ======================= */
-let vosk = null;
-let voskModel = null;
+let vosk        = null;
+let voskModel   = null;
 let isVoskReady = false;
 
-const initializeVosk = async () => {
+const initVosk = async () => {
   try {
     console.log('🔄 Inicializando Vosk...');
     vosk = await import('vosk');
     const modelPath = path.join(modelsDir, 'vosk-model-es-0.42');
-    if (!fs.existsSync(modelPath)) {
-      console.log('⚠️  Modelo Vosk no encontrado en', modelPath);
-      return false;
-    }
-    console.log('📖 Cargando modelo Vosk...');
-    voskModel = new vosk.Model(modelPath);
+    if (!fs.existsSync(modelPath)) { console.log('⚠️  Modelo Vosk no encontrado en', modelPath); return false; }
+    voskModel   = new vosk.Model(modelPath);
     isVoskReady = true;
-    console.log('✅ Vosk inicializado');
+    console.log('✅ Vosk listo');
     return true;
-  } catch (e) {
-    console.error('❌ Error inicializando Vosk:', e);
-    return false;
-  }
+  } catch (e) { console.error('❌ Vosk:', e); return false; }
 };
 
-/** ======================= LLM ======================= */
-const LLM_BASE_URL = process.env.LLM_BASE_URL || 'http://localhost:11434';
-const LLM_MODEL    = process.env.LLM_MODEL    || 'qwen2.5:7b-instruct';
-const LLM_SYSTEM   = `Eres ALMA (Asistente Lingüístico de Monitoreo Amigable). Eres un asistente de inteligencia artificial que se comunica exclusivamente en español. Tu estilo debe ser breve, claro, empático y directo. Tu objetivo principal es guiar al usuario a través de una serie de preguntas y actividades de evaluación, una por una, dándole todo el tiempo necesario para responder.
-DESPUÉS de responder a la PRIMERA pregunta que el usuario te haga (sobre cualquier tema), tu siguiente acción obligatoria es preguntarle: "¿Estaría dispuesto/a a contestar una breve serie de preguntas y actividades para evaluar su estado actual?"
-Solo si acepta, procederás con la siguiente secuencia EN ORDEN y UNA POR UNA:
-1. Pregunta: "¿Qué año es?" - Espera su respuesta
-2. Pregunta: "¿Qué mes es?" - Espera su respuesta
-3. Instrucción: "Ahora, necesito que recuerde la siguiente dirección para el futuro: 'Manuel Rodrigues 1373, Santiago'. Por favor, repítala para confirmar que la ha entendido correctamente." - Espera a que repita la dirección correctamente, sino, pídele que lo intente de nuevo
-4. Pregunta: "¿Qué hora es aproximadamente?" - Espera su respuesta
-5. Instrucción: "Ahora, por favor, cuente hacia atrás desde el 20 hasta el 1." - Espera a que complete la cuenta
-6. Instrucción: "Ahora, diga los meses del año en orden inverso, empezando por diciembre." - Espera a que lo haga
-7. Pregunta Final: "Para finalizar, por favor, repita la frase de dirección que le dije anteriormente." - Espera su respuesta
-REGLAS CLAVE:
-- No des opiniones: No comentes si sus respuestas son correctas o incorrectas, solo guía el proceso
-- Una a la vez: Nunca hagas más de una pregunta o instrucción en un mismo mensaje
-- Paciencia: Después de cada pregunta/instrucción, cede siempre el turno al usuario y espera por su respuesta completa
-- Confirmación: Puede que el usuario tomar mas de un intento para responder correctamente, sé paciente y empático
-- Claridad: Si el usuario parece confundido, reformula la pregunta de manera más sencilla
-- Foco: Si el usuario se desvía, reconduce suavemente hacia la siguiente pregunta de la lista`;
-
-const LLM_MAX_TOK  = parseInt(process.env.LLM_MAX_TOKENS || '512', 10);
-
-async function askLocalLLM(socket, dialog) {
-  socket.emit('assistant_status', { status: 'thinking' });
-  const body = {
-    model: LLM_MODEL,
-    messages: dialog,
-    stream: true,
-    options: { num_predict: LLM_MAX_TOK, temperature: 0.7, top_p: 0.9 }
-  };
+/** ======================= TTS ======================= */
+async function synthesizeSpeech(text) {
+  const _t0tts = Date.now();
   try {
-    const resp = await fetch(`${LLM_BASE_URL}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type':'application/json' },
-      body: JSON.stringify(body)
+    const resp = await fetch(`${TTS_URL}/synthesize`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ text, language: "es" })
     });
-    if (!resp.ok || !resp.body) {
-      const msg = `LLM error: ${resp.status} ${resp.statusText}`;
-      socket.emit('assistant_error', { error: msg });
-      throw new Error(msg);
+    if (!resp.ok) throw new Error(`TTS HTTP ${resp.status}`);
+    const arrayBuf = await resp.arrayBuffer();
+    const buf = Buffer.from(arrayBuf);
+    console.log(`⏱️  [TTS ] ${buf.length} bytes → ${Date.now()-_t0tts}ms`);
+    return buf;
+  } catch (e) {
+    console.error(`❌ TTS error (${Date.now()-_t0tts}ms):`, e.message);
+    return null;
+  }
+}
+
+/** ======================= System prompt ======================= */
+function buildSystemPrompt(patient) {
+  const now  = new Date();
+  const ts   = now.toLocaleString('es-CL', { weekday:'short', day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
+  const notas = patient.clinical_notes ? ` Notas: ${patient.clinical_notes}.` : '';
+  return `Eres ALMA, asistente de salud. respond only in Spanish, never use Chinese or any other language, sé breve y empático.
+${ts}. Paciente: ${patient.name}, ${patient.age} años.${notas}
+Tras tu primera respuesta pregunta si acepta evaluación breve. Si acepta, haz UNA a la vez en orden:
+1)año actual 2)mes actual 3)pide repetir "Manuel Rodrigues 1373 Santiago" 4)hora aprox 5)contar atrás 20→1 6)meses inverso desde diciembre 7)repetir dirección.
+Normas: una pregunta por turno, no corrijas respuestas, sé paciente.`;
+}
+
+/** ======================= Function calling ======================= */
+const LLM_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_datetime',
+      description: 'Obtiene la fecha y hora actual del sistema.',
+      parameters: { type: 'object', properties: {}, required: [] }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_web',
+      description: 'Busca información en la web usando DuckDuckGo.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Consulta de búsqueda en español' }
+        },
+        required: ['query']
+      }
+    }
+  }
+];
+
+async function executeTool(name, args) {
+  if (name === 'get_datetime') {
+    return new Date().toLocaleString('es-CL', {
+      weekday: 'long', year: 'numeric', month: 'long',
+      day: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+  }
+  if (name === 'search_web') {
+    try {
+      const q   = encodeURIComponent(args.query || '');
+      const r   = await fetch(`https://api.duckduckgo.com/?q=${q}&format=json&no_redirect=1&no_html=1`);
+      const d   = await r.json();
+      const ans = d.AbstractText || d.Answer || d.RelatedTopics?.[0]?.Text || '';
+      return ans || 'Sin resultados disponibles.';
+    } catch (e) { return `Error en búsqueda: ${e.message}`; }
+  }
+  return 'Herramienta desconocida.';
+}
+
+/** ======================= LLM streaming + tool use ======================= */
+async function askLLM(socket, dialog, sessionId, patient) {
+  socket.emit('assistant_status', { status: 'thinking' });
+  const _t0llm = Date.now();
+  let _firstTokenLogged = false;
+
+  const MAX_ITER = 3;
+  let iter = 0;
+  let fullResponse = '';
+
+  while (iter < MAX_ITER) {
+    iter++;
+    const body = {
+      model:    LLM_MODEL,
+      messages: dialog,
+      stream:   true,
+      tools:    LLM_TOOLS,
+      options:  { num_predict: LLM_MAX_TOK, temperature: 0.3, top_p: 0.9 }
+    };
+
+    const resp = await fetch(`${LLM_BASE_URL}/api/chat`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body)
+    });
+    if (!resp.ok || !resp.body) throw new Error(`LLM HTTP ${resp.status}`);
 
     const reader  = resp.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '';
-    let full = '';
+    let buf = '', streamText = '', toolCall = null;
 
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream:true });
-
+      buf += decoder.decode(value, { stream: true });
       let idx;
-      while ((idx = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, idx).trim();
-        buffer = buffer.slice(idx + 1);
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
         if (!line) continue;
-
         let data;
         try { data = JSON.parse(line); } catch { continue; }
-
         if (data.message?.content) {
           const delta = data.message.content;
-          full += delta;
+          if (!_firstTokenLogged) {
+            console.log(`⏱️  [LLM ] primer token → ${Date.now()-_t0llm}ms`);
+            _firstTokenLogged = true;
+          }
+          streamText += delta;
           socket.emit('assistant_text', { delta });
         }
-        if (data.done) {
-          const session = sessions.get(socket.id);
-          if (session && session.conversationActive && full.trim()) {
-            session.dialog.push({ role: 'assistant', content: full });
-            session.messageCount = session.dialog.length - 1;
-          }
-          socket.emit('assistant_text_done', { text: full });
-        }
+        if (data.message?.tool_calls?.length) toolCall = data.message.tool_calls[0];
       }
     }
-    return full;
-  } catch (error) {
-    console.error('💥 Error en askLocalLLM:', error);
-    try { socket.emit('assistant_error', { error: error.message }); } catch {}
-    throw error;
+
+    if (toolCall) {
+      const fnName = toolCall.function?.name;
+      const fnArgs = toolCall.function?.arguments || {};
+      console.log(`🔧 Tool: ${fnName}`, fnArgs);
+      const result = await executeTool(fnName, fnArgs);
+      console.log(`🔧 Result: ${result}`);
+      dialog.push({ role: 'assistant', content: '', tool_calls: [toolCall] });
+      dialog.push({ role: 'tool', content: result });
+      continue;
+    }
+
+    fullResponse = streamText;
+    console.log(`⏱️  [LLM ] respuesta completa (${fullResponse.length} chars) → ${Date.now()-_t0llm}ms`);
+    break;
+  }
+
+  if (fullResponse.trim() && sessionId) {
+    messageOps.add(sessionId, 'assistant', fullResponse);
+    dialog.push({ role: 'assistant', content: fullResponse });
+  }
+
+  socket.emit('assistant_text_done', { text: fullResponse });
+  socket.emit('assistant_status', { status: 'idle' });
+
+  // Comprimir contexto si es necesario
+  if (sessionId && messageOps.countForSession(sessionId) > COMPRESS_THRESHOLD) {
+    compressContext(sessionId, dialog, patient).catch(console.error);
+  }
+
+  // TTS
+  if (fullResponse.trim()) {
+    synthesizeSpeech(fullResponse).then(audioBuf => {
+      if (audioBuf) socket.emit('tts_audio', { audio: audioBuf.toString('base64'), mimeType: 'audio/wav' });
+    }).catch(e => console.error('❌ TTS pipeline:', e.message));
+  }
+
+  return fullResponse;
+}
+
+/** ======================= Compresión de contexto ======================= */
+async function compressContext(sessionId, dialog, patient) {
+  const allMsgs = dialog.filter(m => m.role !== 'system');
+  if (allMsgs.length < 10) return;
+  const toCompress = allMsgs.slice(0, allMsgs.length - 10);
+  const prompt = `Resume brevemente esta conversación entre ALMA y el paciente ${patient.name}. Incluye respuestas a preguntas de evaluación. Máximo 3 oraciones.\n\n${toCompress.map(m => `${m.role === 'user' ? 'Paciente' : 'ALMA'}: ${m.content}`).join('\n')}`;
+  try {
+    const resp = await fetch(`${LLM_BASE_URL}/api/chat`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ model: LLM_MODEL, messages: [{ role: 'user', content: prompt }], stream: false, options: { num_predict: 200, temperature: 0.3 } })
+    });
+    const d = await resp.json();
+    const summary = d.message?.content?.trim();
+    if (summary) { sessionOps.saveSummary(sessionId, summary); console.log(`🗜️ Contexto comprimido para sesión ${sessionId}`); }
+  } catch (e) { console.error('❌ Compresión:', e.message); }
+}
+
+/** ======================= SessionContext ======================= */
+const activeSessions = new Map();
+
+class SessionContext {
+  constructor(socket, patient, sessionId, dialog) {
+    this.socket              = socket;
+    this.patient             = patient;
+    this.sessionId           = sessionId;
+    this.dialog              = dialog;
+    this.voskRec             = null;
+    this.isRecording         = false;
+    this.conversationActive  = false;
+    this.userBuffer          = '';
+    this.wavWriter           = null;
+    this.lastPartial         = '';
+    this.chunksReceived      = 0;
+    this.firstChunkTime      = null;
+  }
+
+  createVoskRec() {
+    if (!isVoskReady || !voskModel) return;
+    try { this.voskRec = new vosk.Recognizer({ model: voskModel, sampleRate: 16000 }); this.voskRec.setWords(true); }
+    catch (e) { console.error('❌ Vosk recognizer:', e); }
+  }
+
+  freeVoskRec() {
+    if (this.voskRec) { try { this.voskRec.free(); } catch {} this.voskRec = null; }
+  }
+
+  startWavWriter() {
+    if (!SAVE_AUDIO) return;
+    const filename = path.join(audioDir, `audio_${this.socket.id}_${Date.now()}.wav`);
+    this.wavWriter = new wav.FileWriter(filename, { sampleRate: 16000, channels: 1, bitDepth: 16 });
+    this.wavWriter.on('error', e => console.error('❌ WAV writer:', e.message));
+  }
+
+  endWavWriter() {
+    if (this.wavWriter) { try { this.wavWriter.end(); } catch {} this.wavWriter = null; }
+  }
+
+  writeAudioChunk(buf) {
+    if (SAVE_AUDIO && this.wavWriter && this.isRecording) {
+      try { this.wavWriter.write(buf); } catch (e) { console.error('❌ Write chunk:', e.message); }
+    }
   }
 }
 
-/** ======================= Utilidades ======================= */
-function displayTranscription(socketId, text, isFinal=false, confidence=0) {
-  const t = new Date().toLocaleTimeString();
-  console.log(`${isFinal?'\x1b[32m':'\x1b[33m'}[${t}] ${socketId.slice(0,8)} ${isFinal?'[FINAL]':'[PARCIAL]'}: ${text}${isFinal && confidence?` (${(confidence*100).toFixed(1)}% conf)`:''}\x1b[0m`);
-}
+/** ======================= Comandos de voz ======================= */
+function processVoiceCommands(text, ctx) {
+  const t = text.toLowerCase().trim();
 
-/** ======================= Conversación ======================= */
-class ConversationManager {
-  startConversation(session, initialQuestion = '') {
-    session.conversationActive = true;
-    session.conversationStart = Date.now();
-    session.dialog = [ { role: 'system', content: LLM_SYSTEM } ];
-    if (initialQuestion) session.dialog.push({ role: 'user', content: initialQuestion });
-    session.messageCount = session.dialog.length - 1;
-    console.log(`🎯 Nueva conversación iniciada: "${initialQuestion || '(sin pregunta inicial)'}"`);
-  }
-  addMessage(session, role, content) {
-    session.dialog.push({ role, content });
-    session.messageCount = session.dialog.length - 1;
-    console.log(`💬 Mensaje agregado (${role}): ${content.substring(0, 50)}${content.length > 50 ? '...' : ''}`);
-  }
-  resetConversation(session) {
-    console.log('🔄 Reiniciando contexto de conversación');
-    session.conversationActive = false;
-    session.conversationStart = null;
-    session.userBuffer = '';
-    session.dialog = [{ role: 'system', content: LLM_SYSTEM }];
-    session.messageCount = 0;
-  }
-  getConversationState(session) {
-    return {
-      active: session.conversationActive,
-      messageCount: session.messageCount,
-      duration: session.conversationStart ? Date.now() - session.conversationStart : 0,
-      hasHistory: session.messageCount > 0
-    };
-  }
-}
-const conversationManager = new ConversationManager();
-
-/** ======================= Comandos por voz ======================= */
-function processVoiceCommands(text, socketId) {
-  const normalizedText = text.toLowerCase().trim();
-  const session = sessions.get(socketId);
-  if (!session) return { isCommand: false, action: null };
-
-  if (normalizedText.includes('hola alma') && !session.conversationActive) {
-    const question = normalizedText.split('hola alma')[1]?.trim() || '';
-    conversationManager.startConversation(session, question);
+  if (t.includes('hola alma') && !ctx.conversationActive) {
+    const question = t.split('hola alma')[1]?.trim() || '';
+    ctx.conversationActive = true;
+    if (question) { ctx.dialog.push({ role: 'user', content: question }); messageOps.add(ctx.sessionId, 'user', question); }
     return { isCommand: true, action: 'start_conversation', question };
   }
 
-  const stopCommands = ['gracias alma', 'detente alma', 'adiós alma', 'hasta luego alma', 'para alma'];
-  for (const cmd of stopCommands) {
-    if (normalizedText.includes(cmd) && session.conversationActive) {
-      conversationManager.resetConversation(session);
-      return { isCommand: true, action: 'stop_conversation', command: cmd };
-    }
+  const stopCmds = ['gracias alma', 'detente alma', 'adiós alma', 'hasta luego alma', 'para alma'];
+  if (stopCmds.some(c => t.includes(c)) && ctx.conversationActive) {
+    ctx.conversationActive = false;
+    ctx.userBuffer = '';
+    return { isCommand: true, action: 'stop_conversation' };
   }
 
-  if ((normalizedText.includes('nueva conversación') || normalizedText.includes('empezar de nuevo')) && session.conversationActive) {
-    conversationManager.resetConversation(session);
-    return { isCommand: true, action: 'reset_conversation' };
-  }
-
-  if (session.conversationActive && normalizedText) {
-    session.userBuffer += (session.userBuffer ? ' ' : '') + normalizedText;
+  if (ctx.conversationActive && t) {
+    ctx.userBuffer += (ctx.userBuffer ? ' ' : '') + t;
     return { isCommand: false, action: 'continue_conversation' };
   }
+
+  if (!ctx.conversationActive && t) ctx.userBuffer += (ctx.userBuffer ? ' ' : '') + t;
+
   return { isCommand: false, action: null };
 }
 
 /** ======================= Socket.IO ======================= */
-io.on('connection', (socket) => {
-  stats.totalConnections++; stats.activeConnections++;
-  console.log(`\n✅ Cliente conectado: ${socket.id} | Activos: ${stats.activeConnections}`);
+io.on('connection', socket => {
+  console.log(`✅ Socket: ${socket.id}`);
 
-  // Sesión
-  const sess = {
-    dialog: [{ role: 'system', content: LLM_SYSTEM }],
-    userBuffer: '',
-    conversationActive: false,
-    conversationStart: null,
-    messageCount: 0,
-    startedAt: Date.now(),
-    audioFilename: null,
-    isRecording: false
-  };
-  sessions.set(socket.id, sess);
+  socket.emit('connected', {
+    message:              'Conectado a ALMA',
+    sampleRate:           16000,
+    supportsTranscription: isVoskReady,
+    tts:                  { enabled: true, engine: 'XTTS-v2' }
+  });
 
-  // Reconocedor Vosk
-  let rec = null;
-  if (isVoskReady && voskModel) {
-    try {
-      rec = new vosk.Recognizer({ model: voskModel, sampleRate: 16000 });
-      rec.setWords(true);
-      recognizers.set(socket.id, rec);
-      console.log(`🎤 Reconocedor Vosk creado para: ${socket.id}`);
-    } catch (e) {
-      console.error('❌ Error creando reconocedor Vosk:', e);
+  socket.on('identify', ({ patientId }) => {
+    if (!patientId) { socket.emit('identify_error', { error: 'Código requerido.' }); return; }
+    const patient = patientOps.getById(patientId);
+    if (!patient) { socket.emit('identify_error', { error: `Paciente "${patientId}" no encontrado.` }); return; }
+
+    const dbSession    = sessionOps.getLatestForPatient(patientId);
+    const isNewSession = !dbSession || dbSession.ended_at !== null;
+    let sessionId;
+
+    if (isNewSession) { sessionId = sessionOps.create(patientId, socket.id); }
+    else              { sessionId = dbSession.id; sessionOps.updateSocket(sessionId, socket.id); }
+
+    const systemPrompt = buildSystemPrompt(patient);
+    const { dialog }   = buildDialog(systemPrompt, sessionOps.getById(sessionId));
+
+    const ctx = new SessionContext(socket, patient, sessionId, dialog);
+    ctx.createVoskRec();
+    activeSessions.set(socket.id, ctx);
+
+    socket.emit('identified', { patientId, patientName: patient.name, sessionId, isNewSession, messageCount: messageOps.countForSession(sessionId) });
+    console.log(`👤 ${patient.name} (${patientId}) — sesión ${sessionId}`);
+  });
+
+  socket.on('audio_chunk', data => {
+    const ctx = activeSessions.get(socket.id);
+    if (!ctx) return;
+    if (!ctx.firstChunkTime) ctx.firstChunkTime = Date.now();
+    ctx.chunksReceived++;
+    const audioBuf = Buffer.from(new Int16Array(data.chunk).buffer);
+    ctx.writeAudioChunk(audioBuf);
+    if (!isVoskReady || !ctx.voskRec) return;
+
+    const _t0stt = Date.now();
+    if (ctx.voskRec.acceptWaveform(audioBuf)) {
+      const r   = ctx.voskRec.result();
+      const txt = (r.text || '').trim();
+      if (!txt) return;
+      console.log(`⏱️  [STT ] "${txt.slice(0,40)}" → ${Date.now()-_t0stt}ms`);
+      socket.emit('transcription', { text: txt, isFinal: true, confidence: r.confidence || 0 });
+      const cmd = processVoiceCommands(txt, ctx);
+      if (cmd.isCommand) {
+        socket.emit('voice_command_detected', { action: cmd.action, text: txt });
+        if (cmd.action === 'start_conversation' && cmd.question)
+          setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient).catch(console.error), 300);
+      } else if (ctx.conversationActive && txt.trim()) {
+        ctx.dialog.push({ role: 'user', content: txt });
+        messageOps.add(ctx.sessionId, 'user', txt);
+        setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient).catch(console.error), 300);
+      }
+    } else {
+      const partial = (ctx.voskRec.partialResult().partial || '').trim();
+      if (partial && partial !== ctx.lastPartial) {
+        ctx.lastPartial = partial;
+        socket.emit('transcription', { text: partial, isFinal: false });
+      }
     }
-  }
+  });
 
-  // Stats
-  let chunksReceived = 0;
-  let firstChunkTime = null;
-  let lastPartial = '';
+  socket.on('get_final_transcription', () => {
+    const ctx = activeSessions.get(socket.id);
+    if (!ctx?.voskRec) return;
+    const txt = (ctx.voskRec.finalResult().text || '').trim();
+    if (!txt) return;
+    socket.emit('transcription', { text: txt, isFinal: true });
+    if (ctx.conversationActive) {
+      ctx.dialog.push({ role: 'user', content: txt });
+      messageOps.add(ctx.sessionId, 'user', txt);
+      setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient).catch(console.error), 300);
+    } else {
+      ctx.userBuffer += (ctx.userBuffer ? ' ' : '') + txt;
+    }
+  });
+
+  socket.on('start_recording', () => {
+    const ctx = activeSessions.get(socket.id);
+    if (!ctx) { socket.emit('audio_error', { error: 'Identifícate primero.' }); return; }
+    ctx.isRecording = true;
+    ctx.startWavWriter();
+    socket.emit('assistant_status', { status: 'idle' });
+    console.log(`🎙️ Recording start: ${ctx.patient.name}`);
+  });
+
+  socket.on('stop_recording', async () => {
+    const ctx = activeSessions.get(socket.id);
+    if (!ctx) return;
+    ctx.isRecording = false;
+    ctx.endWavWriter();
+    try {
+      fs.writeFileSync(
+        path.join(audioDir, `transcript_${socket.id}_${Date.now()}.json`),
+        JSON.stringify({ patientId: ctx.patient.id, sessionId: ctx.sessionId, endedAt: Date.now(), dialog: ctx.dialog }, null, 2)
+      );
+    } catch {}
+    const question = ctx.userBuffer.trim();
+    if (question && !ctx.conversationActive) {
+      ctx.dialog.push({ role: 'user', content: question });
+      messageOps.add(ctx.sessionId, 'user', question);
+      ctx.userBuffer = '';
+      await askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient).catch(console.error);
+    }
+    sessionOps.end(ctx.sessionId);
+    console.log(`⏹️ Recording stop: ${ctx.patient.name}`);
+  });
 
   const statsInterval = setInterval(() => {
+    const ctx = activeSessions.get(socket.id);
     try {
       socket.emit('server_stats', {
-        activeConnections: stats.activeConnections,
-        chunksReceived,
-        duration: firstChunkTime ? Date.now()-firstChunkTime : 0,
-        totalTranscriptions: stats.totalTranscriptions,
-        voskReady: isVoskReady,
-        conversationState: conversationManager.getConversationState(sess),
-        isRecording: sess.isRecording
+        activeConnections:  activeSessions.size,
+        chunksReceived:     ctx?.chunksReceived  || 0,
+        duration:           ctx?.firstChunkTime  ? Date.now() - ctx.firstChunkTime : 0,
+        isRecording:        ctx?.isRecording     || false,
+        conversationActive: ctx?.conversationActive || false,
+        patientName:        ctx?.patient?.name   || null
       });
     } catch {}
   }, 2000);
 
-  /** ===== Helpers de grabación ===== */
-  function attachWriter(socketId, filename) {
-    const writer = new wav.FileWriter(filename, { sampleRate:16000, channels:1, bitDepth:16 });
-
-    // Asegura que no crashee el proceso si hay error asíncrono (como ENOENT)
-    writer.on('error', (err) => {
-      const rec = activeRecordings.get(socketId);
-      if (rec) rec.hadError = true;
-      console.error(`💥 FileWriter error (${socketId}):`, err?.code || err?.message || err);
-      try { io.to(socketId).emit('audio_error', { error: String(err?.message || err) }); } catch {}
-    });
-
-    writer.on('finish', () => {
-      console.log(`✅ FileWriter finish: ${filename}`);
-    });
-
-    activeRecordings.set(socketId, {
-      writer,
-      filename,
-      session: sess,
-      completed: false,
-      hadError: false
-    });
-    return writer;
-  }
-
-  /** ===== Audio entrante ===== */
-  socket.on('audio_chunk', (data) => {
-    try {
-      if (!firstChunkTime) firstChunkTime = Date.now();
-      chunksReceived++; stats.totalAudioChunks++;
-
-      const audioData = new Int16Array(data.chunk);
-      const audioChunk = Buffer.from(audioData.buffer);
-
-      // Escribir sólo si hay grabación activa y writer existente
-      const recInfo = activeRecordings.get(socket.id);
-      if (sess.isRecording && recInfo && recInfo.writer && !recInfo.hadError) {
-        try { recInfo.writer.write(audioChunk); } catch (e) {
-          console.error('❌ Error escribiendo chunk:', e.message);
-        }
-      }
-
-      // Transcripción
-      if (isVoskReady && rec) {
-        const isFinal = rec.acceptWaveform(audioChunk);
-
-        if (isFinal) {
-          const r = rec.result();
-          const txt = (r.text || '').trim();
-          if (txt) {
-            displayTranscription(socket.id, txt, true, r.confidence || 0);
-            socket.emit('transcription', { text: txt, isFinal: true, confidence: r.confidence || 0 });
-
-            const commandResult = processVoiceCommands(txt, socket.id);
-
-            if (commandResult.isCommand) {
-              socket.emit('voice_command_detected', {
-                action: commandResult.action,
-                command: commandResult.command || 'hola alma',
-                text: txt,
-                conversationState: conversationManager.getConversationState(sess)
-              });
-              if (commandResult.action === 'start_conversation' && commandResult.question) {
-                setTimeout(async () => {
-                  try { await askLocalLLM(socket, sess.dialog); } catch (e) { console.error('💥 Error LLM inicio:', e); }
-                }, 500);
-              }
-            } else if (sess.conversationActive && txt.trim()) {
-              conversationManager.addMessage(sess, 'user', txt);
-              setTimeout(async () => {
-                try { await askLocalLLM(socket, sess.dialog); } catch (e) { console.error('💥 Error LLM conversacional:', e); }
-              }, 500);
-            } else if (!sess.conversationActive) {
-              sess.userBuffer += (sess.userBuffer ? ' ' : '') + txt;
-            }
-          }
-        } else {
-          const p = rec.partialResult();
-          const partial = (p.partial || '').trim();
-          if (partial && partial !== lastPartial) {
-            lastPartial = partial;
-            displayTranscription(socket.id, partial, false);
-            socket.emit('transcription', { text: partial, isFinal:false, confidence: 0 });
-          }
-        }
-      }
-
-      if (chunksReceived % 20 === 0) {
-        const dur = firstChunkTime ? Date.now()-firstChunkTime : 0;
-        console.log(`📊 ${socket.id}: ${chunksReceived} chunks, ${Math.round(dur/1000)}s, Grabación: ${sess.isRecording ? 'ACTIVA' : 'INACTIVA'}`);
-      }
-      if (chunksReceived % 10 === 0) {
-        const totalBytes = recInfo?.writer?.bytesWritten ?? 0;
-        socket.emit('audio_ack', {
-          chunksReceived,
-          totalBytes,
-          timestamp: Date.now(),
-          conversationState: conversationManager.getConversationState(sess),
-          isRecording: sess.isRecording
-        });
-      }
-    } catch (e) {
-      console.error('❌ Error procesando audio:', e);
-      socket.emit('audio_error', { error: e.message });
-    }
-  });
-
-  /** ===== Final forzado ===== */
-  socket.on('get_final_transcription', () => {
-    if (!rec) return;
-    try {
-      const finalResult = rec.finalResult();
-      const txt = (finalResult.text || '').trim();
-      if (txt) {
-        displayTranscription(socket.id, txt, true, finalResult.confidence || 0);
-        socket.emit('transcription', { text: txt, isFinal:true, confidence: finalResult.confidence || 0 });
-
-        if (sess.conversationActive && txt.trim()) {
-          setTimeout(async () => {
-            try {
-              sess.dialog.push({ role: 'user', content: txt });
-              await askLocalLLM(socket, sess.dialog);
-            } catch (e) { console.error('💥 Error en respuesta final IA:', e); }
-          }, 500);
-        } else {
-          sess.userBuffer += (sess.userBuffer ? ' ' : '') + txt;
-        }
-      }
-    } catch (e) {
-      console.error('❌ Error finalResult:', e);
-    }
-  });
-
-  /** ===== Inicio / fin de grabación ===== */
-  socket.on('start_recording', () => {
-    console.log(`🎙️  start ${socket.id}`);
-    try {
-      // Crear writer SOLO aquí
-      const filename = path.join(audioDir, `audio_${socket.id}_${Date.now()}.wav`);
-      attachWriter(socket.id, filename);
-      sess.audioFilename = filename;
-      sess.isRecording = true;
-      socket.emit('assistant_status', { status:'idle' });
-    } catch (e) {
-      console.error('❌ Error en start_recording:', e.message);
-      socket.emit('audio_error', { error: e.message });
-    }
-  });
-
-  socket.on('stop_recording', async () => {
-    console.log(`⏹️  stop  ${socket.id}`);
-    sess.isRecording = false;
-
-    // Cerrar archivo WAV y guardar transcripción si hay writer
-    try {
-      const recording = activeRecordings.get(socket.id);
-      if (recording?.writer && !recording.hadError) {
-        recording.completed = true;
-        try { recording.writer.end(); } catch (e) { console.error('❌ end writer:', e.message); }
-        console.log(`💾 Archivo de audio guardado: ${recording.filename}`);
-
-        // Guardar transcripción
-        const transcriptFile = path.join(audioDir, `transcript_${socket.id}_${Date.now()}.json`);
-        try {
-          fs.writeFileSync(transcriptFile, JSON.stringify({
-            socketId: socket.id,
-            startedAt: sess.startedAt,
-            endedAt: Date.now(),
-            dialog: sess.dialog,
-            chunksReceived,
-            conversationActive: sess.conversationActive,
-            audioFile: recording.filename,
-            messageCount: sess.messageCount
-          }, null, 2));
-          console.log(`📄 Transcripción guardada: ${transcriptFile}`);
-        } catch (e) {
-          console.error('❌ Error guardando transcripción:', e.message);
-        }
-      }
-      // No crear un nuevo writer aquí (evita la condición de carrera)
-      activeRecordings.delete(socket.id);
-      sess.audioFilename = null;
-    } catch (e) {
-      console.error('❌ Error guardando al detener:', e);
-    }
-
-    // Procesar con IA si hay texto acumulado y no hay conversación activa
-    const question = (sess.userBuffer || '').trim();
-    if (question && !sess.conversationActive) {
-      try {
-        sess.dialog.push({ role:'user', content: question });
-        await askLocalLLM(socket, sess.dialog);
-        socket.emit('assistant_status', { status:'idle' });
-        stats.totalTranscriptions++;
-        sess.userBuffer = '';
-      } catch (e) {
-        console.error('💥 LLM error:', e);
-      }
-    }
-  });
-
-  /** ===== Gestión de conversación ===== */
-  socket.on('get_conversation_state', () => {
-    socket.emit('conversation_state', conversationManager.getConversationState(sess));
-  });
-
-  socket.on('reset_conversation', () => {
-    conversationManager.resetConversation(sess);
-    socket.emit('conversation_reset', { message: 'Conversación reiniciada' });
-    console.log(`🔄 Conversación reiniciada manualmente para: ${socket.id}`);
-  });
-
-  /** ===== Desconexión ===== */
-  socket.on('disconnect', (reason) => {
-    stats.activeConnections--;
-    console.log(`\n🔴 Cliente desconectado: ${socket.id} (${reason})`);
-
-    // Cerrar Vosk
-    if (rec) {
-      try {
-        const fin = rec.finalResult();
-        if (fin.text && fin.text.trim()) {
-          try { socket.emit('transcription', { text: fin.text, isFinal:true, confidence: fin.confidence || 0 }); } catch {}
-          sess.userBuffer += (sess.userBuffer ? ' ' : '') + fin.text.trim();
-        }
-        rec.free();
-      } catch (e) {
-        console.error('❌ Error liberando Vosk:', e);
-      }
-      recognizers.delete(socket.id);
-    }
-
-    // Cerrar writer si existe (sin recrear ni borrar archivo aquí)
-    const recording = activeRecordings.get(socket.id);
-    if (recording) {
-      try {
-        if (recording.writer) {
-          try { recording.writer.end(); } catch (e) { /* writer ya destruido */ }
-          console.log(`🔴 Writer cerrado para: ${socket.id}`);
-        }
-      } catch (e) {
-        console.error('❌ Error en limpieza de grabación (no fatal):', e.message);
-      }
-      activeRecordings.delete(socket.id);
-    }
-
+  socket.on('disconnect', reason => {
     clearInterval(statsInterval);
-    sessions.delete(socket.id);
-    console.log(`✅ Limpieza completada para: ${socket.id}`);
+    const ctx = activeSessions.get(socket.id);
+    if (ctx) { ctx.endWavWriter(); ctx.freeVoskRec(); if (ctx.sessionId) sessionOps.end(ctx.sessionId); activeSessions.delete(socket.id); }
+    console.log(`🔴 ${socket.id} (${reason})`);
   });
 
-  /** ===== Errores de socket ===== */
-  socket.on('error', (e) => {
-    console.error(`💥 Error en socket ${socket.id}:`, e.message);
-  });
-
-  /** ===== Handshake ===== */
-  socket.emit('connected', {
-    message: 'Conectado al servidor de audio',
-    sampleRate: 16000,
-    expectedChunkSize: 4096,
-    supportsTranscription: isVoskReady,
-    transcriptionEngine: 'Vosk (Offline)',
-    llm: { base: LLM_BASE_URL, model: LLM_MODEL },
-    conversationFeatures: {
-      enabled: true,
-      unlimitedMessages: true,
-      activationPhrase: 'hola alma'
-    }
-  });
-
-  console.log(`🎯 Esperando audio de: ${socket.id}`);
+  socket.on('error', e => console.error(`💥 Socket ${socket.id}:`, e.message));
 });
 
-/** ======================= Endpoints extra ======================= */
-app.get('/test', (req, res) => {
-  res.json({
-    status: 'Server running',
-    timestamp: new Date().toISOString(),
-    features: {
-      conversationManagement: true,
-      voiceCommands: true,
-      unlimitedMessages: true,
-      activationPhrase: 'hola alma'
-    }
-  });
-});
-
-app.get('/stats', (req, res) => {
-  const activeSessions = Array.from(sessions.values()).filter(s => s.conversationActive).length;
-  res.json({
-    ...stats,
-    voskReady: isVoskReady,
-    uptime: process.uptime(),
-    memory: process.memoryUsage(),
-    activeConversations: activeSessions,
-    totalSessions: sessions.size
-  });
-});
-
-app.get('/conversations/active', (req, res) => {
+/** ======================= REST ======================= */
+app.post('/patients', (req, res) => {
   try {
-    const activeConversations = Array.from(sessions.entries())
-      .filter(([id, session]) => session.conversationActive)
-      .map(([id, session]) => ({
-        socketId: id,
-        messageCount: session.messageCount,
-        duration: session.conversationStart ? Date.now() - session.conversationStart : 0,
-        lastMessage: session.dialog[session.dialog.length - 1]?.content || 'N/A'
-      }));
-    res.json({ activeCount: activeConversations.length, conversations: activeConversations });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const { id, name, age, clinical_notes } = req.body;
+    if (!id || !name) return res.status(400).json({ error: 'id y name son requeridos.' });
+    if (patientOps.getById(id)) return res.status(409).json({ error: 'Paciente ya existe.' });
+    patientOps.create(id, name, age, clinical_notes);
+    res.status(201).json({ ok: true, id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/transcriptions', (req, res) => {
+app.get('/patients',     (_req, res) => { try { res.json(patientOps.getAll()); } catch (e) { res.status(500).json({ error: e.message }); } });
+app.get('/patients/:id', (req,  res) => {
   try {
-    const transcriptFiles = fs.readdirSync(audioDir)
-      .filter(f => f.startsWith('transcript_') && f.endsWith('.json'))
-      .map(f => {
-        const fp = path.join(audioDir, f);
-        const st = fs.statSync(fp);
-        const content = JSON.parse(fs.readFileSync(fp, 'utf8'));
-        return {
-          filename: f,
-          created: st.birthtime,
-          size: st.size,
-          dialogTurns: content.dialog?.length || 0,
-          chunks: content.chunksReceived || 0,
-          conversationActive: content.conversationActive || false,
-          messageCount: content.messageCount || 0,
-          duration: (content.endedAt || st.mtimeMs) - (content.startedAt || st.birthtimeMs)
-        };
-      })
-      .sort((a, b) => new Date(b.created) - new Date(a.created))
-      .slice(0, 10);
-    res.json(transcriptFiles);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const p = patientOps.getById(req.params.id);
+    if (!p) return res.status(404).json({ error: 'No encontrado.' });
+    res.json({ ...p, sessions: sessionOps.getAllForPatient(p.id) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
-app.get('/transcription/:filename', (req, res) => {
+app.put('/patients/:id', (req, res) => {
   try {
-    const filePath = path.join(audioDir, req.params.filename);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error:'Transcripción no encontrada' });
-    const content = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    res.json(content);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const r = patientOps.update(req.params.id, req.body);
+    if (!r?.changes) return res.status(404).json({ error: 'No encontrado.' });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
-app.post('/conversations/reset-all', (req, res) => {
-  try {
-    let resetCount = 0;
-    sessions.forEach((session) => {
-      if (session.conversationActive) {
-        conversationManager.resetConversation(session);
-        resetCount++;
-      }
-    });
-    res.json({ message: `Se reiniciaron ${resetCount} conversaciones activas`, resetCount });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+app.delete('/patients/:id', (req, res) => {
+  try { patientOps.delete(req.params.id); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
+app.get('/patients/:id/sessions',    (req, res) => { try { res.json(sessionOps.getAllForPatient(req.params.id)); } catch (e) { res.status(500).json({ error: e.message }); } });
+app.get('/sessions/:id/messages',    (req, res) => { try { res.json(messageOps.getForSession(req.params.id)); }   catch (e) { res.status(500).json({ error: e.message }); } });
+app.get('/stats', (_req, res) => res.json({ activeSockets: activeSessions.size, voskReady: isVoskReady, saveAudio: SAVE_AUDIO, llmModel: LLM_MODEL, ttsUrl: TTS_URL, uptime: process.uptime() }));
+app.get('/test',  (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 /** ======================= Arranque ======================= */
-initializeVosk().then(ok => {
-  console.log(ok ? '🎤 Vosk listo para transcripciones' : '⚠️  Vosk no disponible (transcripción desactivada)');
-});
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Servidor en http://localhost:${PORT}`);
-  console.log(`📊 /stats  📝 /transcriptions  🧪 /test  💬 /conversations/active`);
-  console.log(`🎯 Sistema de conversación ALMA activado:`);
-  console.log(`   - Activación: "hola alma"`);
-  console.log(`   - Desactivación: "gracias alma", "detente alma", etc.`);
-  console.log(`   - Mensajes: ILIMITADOS`);
-  console.log(`   - Contexto conversacional completo preservado`);
-});
+(async () => {
+  await initDB();
+  const voskOk = await initVosk();
+  console.log(voskOk ? '🎤 Vosk listo' : '⚠️  Vosk no disponible');
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🚀 ALMA en http://localhost:${PORT}`);
+    console.log(`   SAVE_AUDIO: ${SAVE_AUDIO} | LLM: ${LLM_MODEL} | TTS: ${TTS_URL}\n`);
+  });
+})();

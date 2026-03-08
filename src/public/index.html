@@ -1,819 +1,359 @@
 <!DOCTYPE html>
 <html lang="es">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Transcripción de Audio en Tiempo Real</title>
-    <style>
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ALMA — Asistente de Voz</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card { background: white; border-radius: 16px; box-shadow: 0 24px 48px rgba(0,0,0,.18); overflow: hidden; width: 100%; max-width: 820px; }
+    .header { background: #2c3e50; color: white; padding: 28px 32px; text-align: center; }
+    .header h1 { font-size: 2rem; margin-bottom: 6px; }
+    .header p  { opacity: .75; font-size: 1rem; }
+    .body { padding: 28px 32px; display: flex; flex-direction: column; gap: 18px; }
 
-      body {
-        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        min-height: 100vh;
-        padding: 20px;
-      }
+    /* LOGIN */
+    #loginSection { display: flex; flex-direction: column; align-items: center; gap: 18px; }
+    #loginSection h2 { color: #2c3e50; font-size: 1.3rem; }
+    .login-form { display: flex; gap: 12px; width: 100%; max-width: 420px; }
+    .login-form input { flex: 1; padding: 14px 16px; border: 2px solid #dee2e6; border-radius: 8px; font-size: 1rem; outline: none; transition: border-color .2s; }
+    .login-form input:focus { border-color: #667eea; }
+    .login-form button { padding: 14px 24px; background: #667eea; color: white; border: none; border-radius: 8px; font-size: 1rem; font-weight: bold; cursor: pointer; }
+    .login-form button:hover { background: #5a6fd8; }
+    #loginError { color: #dc3545; font-size: .9rem; min-height: 20px; }
 
-      .container {
-        max-width: 800px;
-        margin: 0 auto;
-        background: white;
-        border-radius: 15px;
-        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-        overflow: hidden;
-      }
+    /* MAIN */
+    #mainSection { display: none; flex-direction: column; gap: 18px; }
+    .patient-bar { background: #eef2ff; border: 1px solid #c5cae9; border-radius: 10px; padding: 12px 18px; display: flex; justify-content: space-between; align-items: center; }
+    .patient-bar .pname { font-weight: bold; color: #2c3e50; font-size: 1.05rem; }
+    .patient-bar .pmeta { font-size: .82rem; color: #6c757d; }
+    .patient-bar button { background: none; border: 1px solid #adb5bd; border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: .85rem; color: #495057; }
+    .patient-bar button:hover { background: #dee2e6; }
 
-      .header {
-        background: #2c3e50;
-        color: white;
-        padding: 30px;
-        text-align: center;
-      }
+    .status-bar { padding: 12px 18px; border-radius: 10px; text-align: center; font-weight: bold; font-size: .95rem; }
+    .status-bar.connected    { background: #d4edda; color: #155724; border: 2px solid #c3e6cb; }
+    .status-bar.disconnected { background: #f8d7da; color: #721c24; border: 2px solid #f5c6cb; }
+    .status-bar.thinking     { background: #fff3cd; color: #856404; border: 2px solid #ffeeba; }
 
-      .header h1 {
-        font-size: 2.5em;
-        margin-bottom: 10px;
-      }
+    .controls { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .controls button { padding: 13px 26px; border: none; border-radius: 8px; font-size: .95rem; font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: all .2s; }
+    .controls button:disabled { opacity: .5; cursor: not-allowed; }
+    #startBtn { background: #28a745; color: white; }
+    #startBtn:hover:not(:disabled) { background: #218838; transform: translateY(-2px); }
+    #stopBtn  { background: #dc3545; color: white; }
+    #stopBtn:hover:not(:disabled)  { background: #c82333; transform: translateY(-2px); }
 
-      .header p {
-        opacity: 0.8;
-        font-size: 1.1em;
-      }
+    canvas { width: 100%; height: 72px; background: #1a1a2e; border-radius: 8px; display: block; }
 
-      .content {
-        padding: 30px;
-      }
+    .section-title { font-size: 1rem; font-weight: bold; color: #2c3e50; margin-bottom: 8px; }
+    .transcript-box, .assistant-box { border: 2px solid #e9ecef; border-radius: 10px; padding: 16px; min-height: 110px; max-height: 250px; overflow-y: auto; background: #f8f9fa; line-height: 1.65; }
 
-      .status {
-        padding: 15px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-        text-align: center;
-        font-weight: bold;
-        transition: all 0.3s ease;
-      }
+    .msg-final    { background: #d4edda; border-left: 4px solid #28a745; border-radius: 6px; padding: 8px 14px; margin: 5px 0; color: #155724; animation: fadeUp .4s ease; }
+    .msg-interim  { background: #fff3cd; border-radius: 6px; padding: 5px 10px; color: #6c757d; font-style: italic; }
+    .msg-cmd-on   { background: #cfe2ff; border-left: 4px solid #0d6efd; border-radius: 6px; padding: 8px 14px; margin: 5px 0; color: #084298; }
+    .msg-cmd-off  { background: #f8d7da; border-left: 4px solid #dc3545; border-radius: 6px; padding: 8px 14px; margin: 5px 0; color: #721c24; }
+    .msg-ai       { background: #eef6ff; border-left: 4px solid #007bff; border-radius: 6px; padding: 10px 14px; margin: 6px 0; white-space: pre-wrap; color: #1a1a2e; }
+    @keyframes fadeUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
 
-      .status.connected {
-        background: #d4edda;
-        color: #155724;
-        border: 2px solid #c3e6cb;
-      }
+    .aa-row { display: flex; gap: 10px; margin-top: 8px; }
+    .aa-row button { padding: 8px 16px; border: none; border-radius: 6px; font-size: .85rem; cursor: pointer; font-weight: bold; }
+    #clearBtn { background: #6c757d; color: white; }
+    #askBtn   { background: #0d6efd; color: white; }
 
-      .status.disconnected {
-        background: #f8d7da;
-        color: #721c24;
-        border: 2px solid #f5c6cb;
-      }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+    .stat { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 12px; text-align: center; }
+    .stat .val { font-size: 1.3rem; font-weight: bold; color: #2c3e50; }
+    .stat .lbl { font-size: .75rem; color: #6c757d; margin-top: 4px; }
 
-      .controls {
-        display: flex;
-        gap: 15px;
-        margin-bottom: 30px;
-        justify-content: center;
-        flex-wrap: wrap;
-      }
+    .cmd-hint { background: #d1ecf1; border: 1px solid #bee5eb; border-radius: 8px; padding: 12px 16px; color: #0c5460; font-size: .9rem; }
 
-      button {
-        padding: 15px 30px;
-        border: none;
-        border-radius: 8px;
-        font-size: 16px;
-        font-weight: bold;
-        cursor: pointer;
-        transition: all 0.3s ease;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
+    #toast { position: fixed; top: 20px; right: 20px; padding: 13px 20px; border-radius: 8px; color: white; font-weight: bold; font-size: .88rem; z-index: 9999; opacity: 0; transition: opacity .3s; pointer-events: none; box-shadow: 0 4px 12px rgba(0,0,0,.2); }
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+<div id="toast"></div>
 
-      button:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-      }
+<div class="card">
+  <div class="header">
+    <h1>🤖 ALMA</h1>
+    <p>Asistente Lingüístico de Monitoreo Amigable</p>
+  </div>
+  <div class="body">
 
-      #startBtn {
-        background: #28a745;
-        color: white;
-      }
+    <!-- LOGIN -->
+    <div id="loginSection">
+      <h2>👤 Identificación del paciente</h2>
+      <div class="login-form">
+        <input id="pidInput" type="text" placeholder="Código de paciente (ej: PAC-001)" autocomplete="off" />
+        <button onclick="identify()">Ingresar</button>
+      </div>
+      <div id="loginError"></div>
+    </div>
 
-      #startBtn:hover:not(:disabled) {
-        background: #218838;
-        transform: translateY(-2px);
-      }
-
-      #stopBtn {
-        background: #dc3545;
-        color: white;
-      }
-
-      #stopBtn:hover:not(:disabled) {
-        background: #c82333;
-        transform: translateY(-2px);
-      }
-
-      .transcription-section {
-        margin-bottom: 30px;
-      }
-
-      .transcription-section h3 {
-        margin-bottom: 15px;
-        color: #2c3e50;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-
-      #transcription {
-        border: 2px solid #e9ecef;
-        border-radius: 10px;
-        padding: 20px;
-        min-height: 150px;
-        max-height: 300px;
-        overflow-y: auto;
-        background: #f8f9fa;
-        line-height: 1.6;
-      }
-
-      .interim {
-        color: #6c757d;
-        font-style: italic;
-        background: #fff3cd;
-        padding: 5px 10px;
-        border-radius: 5px;
-        display: inline-block;
-        margin: 2px 0;
-      }
-
-      .final {
-        color: #155724;
-        background: #d4edda;
-        padding: 8px 15px;
-        border-radius: 8px;
-        margin: 5px 0;
-        border-left: 4px solid #28a745;
-        animation: fadeIn 0.5s ease;
-      }
-
-      .command-detected {
-        background: #d4edda !important;
-        border-left: 4px solid #28a745 !important;
-        animation: pulse 1s infinite;
-      }
-
-      @keyframes pulse {
-        0% {
-          transform: scale(1);
-        }
-        50% {
-          transform: scale(1.02);
-        }
-        100% {
-          transform: scale(1);
-        }
-      }
-
-      .assistant-active {
-        background: linear-gradient(
-          135deg,
-          #667eea 0%,
-          #764ba2 100%
-        ) !important;
-        color: white !important;
-      }
-
-      @keyframes fadeIn {
-        from {
-          opacity: 0;
-          transform: translateY(10px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
-      }
-
-      .stats {
-        background: #e9ecef;
-        padding: 20px;
-        border-radius: 10px;
-        margin-top: 20px;
-      }
-
-      .stats h4 {
-        margin-bottom: 15px;
-        color: #495057;
-      }
-
-      .stats-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 15px;
-      }
-
-      .stat-item {
-        background: white;
-        padding: 15px;
-        border-radius: 8px;
-        text-align: center;
-        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-      }
-
-      .stat-value {
-        font-size: 1.5em;
-        font-weight: bold;
-        color: #495057;
-      }
-
-      .stat-label {
-        font-size: 0.9em;
-        color: #6c757d;
-        margin-top: 5px;
-      }
-
-      .visualizer {
-        width: 100%;
-        height: 80px;
-        background: #2c3e50;
-        border-radius: 8px;
-        margin: 20px 0;
-        overflow: hidden;
-      }
-
-      #audioVisualizer {
-        width: 100%;
-        height: 100%;
-      }
-
-      .instructions {
-        background: #fff3cd;
-        border: 1px solid #ffeaa7;
-        border-radius: 8px;
-        padding: 15px;
-        margin: 20px 0;
-        color: #856404;
-      }
-
-      .instructions h4 {
-        margin-bottom: 10px;
-      }
-
-      .instructions ul {
-        margin-left: 20px;
-      }
-
-      .instructions li {
-        margin: 5px 0;
-      }
-
-      .command-help {
-        background: #d1ecf1;
-        border: 1px solid #bee5eb;
-        border-radius: 8px;
-        padding: 15px;
-        margin: 15px 0;
-        color: #0c5460;
-      }
-
-      .command-help h4 {
-        margin-bottom: 10px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-
-      @media (max-width: 600px) {
-        .container {
-          margin: 10px;
-        }
-
-        .header h1 {
-          font-size: 2em;
-        }
-
-        button {
-          padding: 12px 20px;
-          font-size: 14px;
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <div class="header">
-        <h1>🎤 Transcripción en Tiempo Real</h1>
-        <p>Habla y ve tu voz convertida en texto instantáneamente</p>
+    <!-- MAIN -->
+    <div id="mainSection">
+      <div class="patient-bar">
+        <div>
+          <div class="pname" id="pName">—</div>
+          <div class="pmeta" id="pMeta">—</div>
+        </div>
+        <button onclick="logout()">↩ Cambiar paciente</button>
       </div>
 
-      <div class="content">
-        <div id="status" class="status disconnected">
-          🔴 Desconectado del servidor
-        </div>
+      <div id="statusBar" class="status-bar disconnected">🔴 Conectando…</div>
 
-        <div class="instructions">
-          <h4>💡 Instrucciones:</h4>
-          <ul>
-            <li>1. Asegúrate de permitir el acceso al micrófono</li>
-            <li>2. Haz clic en "Iniciar Grabación"</li>
-            <li>3. Comienza a hablar claramente</li>
-            <li>4. Ve la transcripción en tiempo real</li>
-            <li>5. Haz clic en "Detener Grabación" cuando termines</li>
-          </ul>
-        </div>
+      <div class="cmd-hint">
+        🎯 Di <strong>"Hola ALMA"</strong> seguido de tu pregunta para activar la IA. &nbsp;
+        Di <strong>"Gracias ALMA"</strong> para finalizar.
+      </div>
 
-        <div class="command-help">
-          <h4>🎯 Comando de Voz:</h4>
-          <p>
-            Di <strong>"Hola ALMA"</strong> seguido de tu pregunta para activar
-            la IA automáticamente.
-          </p>
-          <p><em>Ejemplo: "Hola ALMA, ¿qué hora es?"</em></p>
-        </div>
+      <div class="controls">
+        <button id="startBtn" onclick="startRecording()">🎤 Iniciar Grabación</button>
+        <button id="stopBtn"  onclick="stopRecording()" disabled>⏹️ Detener Grabación</button>
+      </div>
 
-        <div class="controls">
-          <button id="startBtn" onclick="startRecording()">
-            🎤 Iniciar Grabación
-          </button>
-          <button id="stopBtn" onclick="stopRecording()" disabled>
-            ⏹️ Detener Grabación
-          </button>
-        </div>
+      <canvas id="viz"></canvas>
 
-        <div class="visualizer">
-          <canvas id="audioVisualizer"></canvas>
-        </div>
+      <div>
+        <div class="section-title">📝 Transcripción en tiempo real</div>
+        <div class="transcript-box" id="tBox"></div>
+      </div>
 
-        <div class="transcription-section">
-          <h3>📝 Transcripción en Tiempo Real</h3>
-          <div id="transcription"></div>
+      <div>
+        <div class="section-title">🤖 Respuesta de ALMA</div>
+        <div class="assistant-box" id="aBox"></div>
+        <div class="aa-row">
+          <button id="clearBtn" onclick="clearAssistant()">🧹 Limpiar</button>
+          <button id="askBtn"   onclick="forceAsk()">📨 Consultar IA</button>
         </div>
+      </div>
 
-        <!-- NUEVA SECCIÓN: Respuesta de la IA -->
-        <div class="transcription-section">
-          <h3>🤖 Respuesta de ALMA (IA local)</h3>
-          <div
-            id="assistant"
-            style="
-              border: 2px solid #e9ecef;
-              border-radius: 10px;
-              padding: 20px;
-              min-height: 100px;
-              max-height: 240px;
-              overflow-y: auto;
-              background: #f8f9fa;
-              line-height: 1.6;
-            "
-          >
-            <!-- Stream de IA se renderiza acá -->
-          </div>
-          <div style="display: flex; gap: 10px; margin-top: 10px">
-            <button
-              id="clearAssistantBtn"
-              style="background: #6c757d; color: #fff"
-            >
-              🧹 Limpiar
-            </button>
-            <button id="askIaBtn" style="background: #007bff; color: #fff">
-              📨 Consultar IA (texto final)
-            </button>
-          </div>
-        </div>
-
-        <div class="stats">
-          <h4>📊 Estadísticas</h4>
-          <div class="stats-grid">
-            <div class="stat-item">
-              <div class="stat-value" id="statConnections">0</div>
-              <div class="stat-label">Conexiones activas</div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-value" id="statChunks">0</div>
-              <div class="stat-label">Chunks de audio</div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-value" id="statDuration">0s</div>
-              <div class="stat-label">Duración</div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-value" id="statTranscriptions">0</div>
-              <div class="stat-label">Transcripciones</div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-value" id="statRecording">NO</div>
-              <div class="stat-label">Grabando</div>
-            </div>
-          </div>
+      <div>
+        <div class="section-title">📊 Estadísticas</div>
+        <div class="stats-grid">
+          <div class="stat"><div class="val" id="sC">0</div><div class="lbl">Conexiones</div></div>
+          <div class="stat"><div class="val" id="sCh">0</div><div class="lbl">Chunks</div></div>
+          <div class="stat"><div class="val" id="sDu">0s</div><div class="lbl">Duración</div></div>
+          <div class="stat"><div class="val" id="sR">NO</div><div class="lbl">Grabando</div></div>
+          <div class="stat"><div class="val" id="sCV">NO</div><div class="lbl">IA activa</div></div>
         </div>
       </div>
     </div>
 
-    <script src="/socket.io/socket.io.js"></script>
-    <script>
-      let socket;
-      let mediaRecorder;
-      let audioContext;
-      let analyser;
-      let canvasCtx;
-      let stream;
-      let isRecording = false;
-      let animationId;
+  </div>
+</div>
 
-      // Configuración de audio
-      const SAMPLE_RATE = 16000;
-      const CHUNK_SIZE = 4096;
+<script src="/socket.io/socket.io.js"></script>
+<script>
+let socket, audioContext, analyser, stream, animId;
+let isRecording = false;
+let aiParagraph = null, aiBuffer = '';
 
-      function connectSocket() {
-        socket = io();
+// ---- Socket ----
+function initSocket() {
+  socket = io();
 
-        socket.on("connected", (data) => {
-          updateStatus(
-            "connected",
-            "✅ Conectado al servidor - Listo para grabar"
-          );
-          console.log("Conectado al servidor:", data);
-        });
-        socket.on("voice_command_detected", (data) => {
-          console.log("Comando de voz detectado:", data);
+  socket.on('identify_error', d => { document.getElementById('loginError').textContent = '❌ ' + d.error; });
 
-          if (data.action === "start_conversation") {
-            updateStatus(
-              "connected",
-              "💬 Conversación ACTIVADA - Habla normalmente"
-            );
-            // Mostrar notificación visual
-            showCommandNotification(
-              "🎯 Conversación activada con ALMA",
-              "success"
-            );
-          } else if (data.action === "stop_conversation") {
-            updateStatus(
-              "connected",
-              "✅ Conversación finalizada - Usa 'Hola ALMA' para reactivar"
-            );
-            // Mostrar notificación visual
-            showCommandNotification("🛑 Conversación finalizada", "info");
-          }
-        });
+  socket.on('identified', d => {
+    document.getElementById('loginError').textContent = '';
+    document.getElementById('pName').textContent = d.patientName;
+    document.getElementById('pMeta').textContent = `ID: ${d.patientId} · Sesión: ${d.sessionId.slice(0,8)}… · Mensajes previos: ${d.messageCount}`;
+    showMain();
+    setStatus('connected', '✅ Listo para grabar');
+    toast(`Bienvenido/a, ${d.patientName}`, 'success');
+  });
 
-        socket.on("transcription", (data) => {
-          displayTranscription(data.text, data.isFinal);
-          console.log("Transcripción recibida:", data);
-        });
+  socket.on('transcription', d => renderTranscription(d.text, d.isFinal));
 
-        socket.on("server_stats", (data) => {
-          updateStats(data);
-        });
+  socket.on('voice_command_detected', d => {
+    if (d.action === 'start_conversation') { setStatus('connected','💬 Conversación activa'); toast('🎯 Conversación iniciada','success'); }
+    if (d.action === 'stop_conversation')  { setStatus('connected','✅ Listo para grabar');   toast('🛑 Conversación finalizada','info'); }
+  });
 
-        socket.on("audio_ack", (data) => {
-          console.log("Confirmación de audio:", data);
-        });
+  socket.on('assistant_status', d => {
+    if (d.status === 'thinking') setStatus('thinking','🧠 ALMA pensando…');
+    if (d.status === 'idle')     setStatus('connected','✅ Listo para grabar');
+  });
 
-        socket.on("audio_error", (data) => {
-          console.error("Error de audio:", data);
-          alert("Error de audio: " + data.error);
-        });
+  socket.on('assistant_text', ({delta}) => {
+    const p = getAiP();
+    if (p.textContent === 'Pensando…') p.textContent = '';
+    aiBuffer += delta;
+    p.textContent = aiBuffer;
+    document.getElementById('aBox').scrollTop = 9999;
+  });
 
-        socket.on("transcription_error", (data) => {
-          console.error("Error de transcripción:", data);
-        });
+  socket.on('assistant_text_done', ({text}) => {
+    const p = getAiP();
+    p.textContent = text;
+    aiParagraph = null; aiBuffer = '';
+    document.getElementById('aBox').scrollTop = 9999;
+  });
 
-        socket.on("disconnect", () => {
-          updateStatus("disconnected", "🔴 Desconectado del servidor");
-          stopRecording();
-        });
+  // TTS — reproducir audio recibido del servidor
+  socket.on('tts_audio', ({audio, mimeType}) => {
+    try {
+      const bytes   = Uint8Array.from(atob(audio), c => c.charCodeAt(0));
+      const blob    = new Blob([bytes], {type: mimeType});
+      const url     = URL.createObjectURL(blob);
+      const el      = new Audio(url);
+      el.play().catch(e => console.warn('TTS play:', e));
+      el.onended = () => URL.revokeObjectURL(url);
+    } catch(e) { console.error('TTS decode:', e); }
+  });
 
-        socket.on("connect_error", (error) => {
-          console.error("Error de conexión:", error);
-          updateStatus("disconnected", "🔴 Error de conexión al servidor");
-        });
+  socket.on('server_stats', d => {
+    document.getElementById('sC').textContent  = d.activeConnections;
+    document.getElementById('sCh').textContent = d.chunksReceived;
+    document.getElementById('sDu').textContent = Math.round(d.duration/1000)+'s';
+    document.getElementById('sR').textContent  = d.isRecording        ? 'SÍ':'NO';
+    document.getElementById('sCV').textContent = d.conversationActive ? 'SÍ':'NO';
+  });
 
-        // ------- Render de IA (streaming) -------
-        const assistantDiv = document.getElementById("assistant");
-        let aiBuffer = "";
-        let aiParagraph = null;
+  socket.on('audio_error', d => toast('❌ '+d.error,'error'));
+  socket.on('disconnect',  () => { setStatus('disconnected','🔴 Desconectado'); stopRecording(); });
+}
 
-        function ensureAssistantParagraph() {
-          if (!aiParagraph) {
-            aiParagraph = document.createElement("div");
-            aiParagraph.style.whiteSpace = "pre-wrap";
-            aiParagraph.style.background = "#eef6ff";
-            aiParagraph.style.borderLeft = "4px solid #007bff";
-            aiParagraph.style.padding = "10px 12px";
-            aiParagraph.style.borderRadius = "8px";
-            aiParagraph.style.margin = "6px 0";
-            assistantDiv.appendChild(aiParagraph);
-          }
-          return aiParagraph;
-        }
+// ---- Login ----
+function identify() {
+  const id = document.getElementById('pidInput').value.trim();
+  if (!id) { document.getElementById('loginError').textContent = 'Ingresa un código.'; return; }
+  document.getElementById('loginError').textContent = '';
+  socket.emit('identify', {patientId: id});
+}
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('pidInput').addEventListener('keydown', e => { if (e.key==='Enter') identify(); });
+});
+function logout() { stopRecording(); showLogin(); }
+function showLogin() { document.getElementById('loginSection').style.display='flex'; document.getElementById('mainSection').style.display='none'; }
+function showMain()  { document.getElementById('loginSection').style.display='none'; document.getElementById('mainSection').style.display='flex'; }
 
-        function scrollAssistantToEnd() {
-          assistantDiv.scrollTop = assistantDiv.scrollHeight;
-        }
+// ---- Grabación ----
+async function startRecording() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {sampleRate:16000, channelCount:1, echoCancellation:true, noiseSuppression:true, autoGainControl:true},
+      video: false
+    });
+    audioContext = new AudioContext({sampleRate:16000});
+    const src    = audioContext.createMediaStreamSource(stream);
+    analyser     = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    src.connect(analyser);
 
-        // Estado de la IA
-        socket.on("assistant_status", (d) => {
-          console.log("IA status:", d);
-          if (d?.status === "thinking") {
-            const p = ensureAssistantParagraph();
-            p.textContent = "Pensando…";
-            aiBuffer = "";
-            updateStatus("connected", "🧠 ION pensando…");
-          }
-          if (d?.status === "idle") {
-            updateStatus("connected", "✅ Conectado - Listo para grabar");
-          }
-        });
+    const cv = document.getElementById('viz');
+    cv.width = cv.offsetWidth; cv.height = cv.offsetHeight;
+    drawViz();
 
-        // Stream de texto
-        socket.on("assistant_text", ({ delta }) => {
-          const p = ensureAssistantParagraph();
-          if (p.textContent === "Pensando…") p.textContent = "";
-          aiBuffer += delta;
-          p.textContent = aiBuffer;
-          scrollAssistantToEnd();
-          console.log("IA ⌨️", delta);
-        });
+    const proc = audioContext.createScriptProcessor(4096,1,1);
+    src.connect(proc); proc.connect(audioContext.destination);
+    proc.onaudioprocess = e => {
+      if (!isRecording || !socket?.connected) return;
+      const inp = e.inputBuffer.getChannelData(0);
+      const pcm = new Int16Array(inp.length);
+      for (let i=0; i<inp.length; i++) { const s=Math.max(-1,Math.min(1,inp[i])); pcm[i]=s<0?s*0x8000:s*0x7fff; }
+      socket.emit('audio_chunk', {chunk: Array.from(pcm)});
+    };
 
-        // Fin de stream
-        socket.on("assistant_text_done", ({ text }) => {
-          const p = ensureAssistantParagraph();
-          p.textContent = text;
-          aiParagraph = null;
-          aiBuffer = "";
-          console.log("IA ✅", text);
-        });
+    isRecording = true;
+    document.getElementById('startBtn').disabled = true;
+    document.getElementById('stopBtn').disabled  = false;
+    setStatus('connected','🎙️ Grabando… habla ahora');
+    socket.emit('start_recording');
+  } catch(e) { toast('❌ Micrófono: '+e.message,'error'); }
+}
 
-        // Botón limpiar IA
-        document
-          .getElementById("clearAssistantBtn")
-          ?.addEventListener("click", () => {
-            assistantDiv.innerHTML = "";
-            aiBuffer = "";
-            aiParagraph = null;
-          });
+function stopRecording() {
+  stream?.getTracks().forEach(t=>t.stop());
+  audioContext?.close();
+  if (animId) cancelAnimationFrame(animId);
+  if (socket) { socket.emit('stop_recording'); socket.emit('get_final_transcription'); }
+  isRecording = false;
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('stopBtn').disabled  = true;
+  setStatus('connected','✅ Listo para grabar');
+  const cv = document.getElementById('viz');
+  cv.getContext('2d').clearRect(0,0,cv.width,cv.height);
+}
 
-        // Botón consultar IA (fuerza final + consulta)
-        document.getElementById("askIaBtn")?.addEventListener("click", () => {
-          socket.emit("get_final_transcription");
-          socket.emit("stop_recording");
-        });
-      }
+// ---- Visualizador ----
+function drawViz() {
+  if (!isRecording||!analyser) return;
+  animId = requestAnimationFrame(drawViz);
+  const cv=document.getElementById('viz'), ctx=cv.getContext('2d');
+  const W=cv.width, H=cv.height;
+  const data=new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(data);
+  ctx.fillStyle='#1a1a2e'; ctx.fillRect(0,0,W,H);
+  const bw=(W/data.length)*2.5; let x=0;
+  for (const v of data) {
+    const bh=(v/255)*H, g=ctx.createLinearGradient(0,H-bh,0,H);
+    g.addColorStop(0,'#667eea'); g.addColorStop(1,'#764ba2');
+    ctx.fillStyle=g; ctx.fillRect(x,H-bh,bw,bh); x+=bw+1;
+  }
+}
 
-      function updateStatus(status, message) {
-        const statusElement = document.getElementById("status");
-        statusElement.className = `status ${status}`;
-        statusElement.innerHTML = message;
-      }
+// ---- Transcripción ----
+function renderTranscription(text, isFinal) {
+  const box = document.getElementById('tBox');
+  if (isFinal) {
+    const div = document.createElement('div');
+    const t   = text.toLowerCase();
+    if (t.includes('hola alma'))
+      { div.className='msg-cmd-on';  div.innerHTML=`🎯 <strong>Activación:</strong> ${text}`; }
+    else if (['gracias alma','detente alma','adiós alma','hasta luego alma'].some(c=>t.includes(c)))
+      { div.className='msg-cmd-off'; div.innerHTML=`🛑 <strong>Fin:</strong> ${text}`; }
+    else
+      { div.className='msg-final'; div.textContent=text; }
+    box.querySelectorAll('.msg-interim').forEach(e=>e.remove());
+    box.appendChild(div);
+  } else {
+    let el = box.querySelector('.msg-interim');
+    if (!el) { el=document.createElement('div'); el.className='msg-interim'; box.appendChild(el); }
+    el.textContent = text;
+  }
+  box.scrollTop = 9999;
+}
 
-      function updateStats(data) {
-        document.getElementById("statConnections").textContent =
-          data.activeConnections;
-        document.getElementById("statChunks").textContent = data.chunksReceived;
-        document.getElementById("statDuration").textContent =
-          Math.round(data.duration / 1000) + "s";
-        document.getElementById("statTranscriptions").textContent =
-          data.totalTranscriptions;
-      }
+// ---- Asistente ----
+function getAiP() {
+  if (!aiParagraph) {
+    aiParagraph = document.createElement('div');
+    aiParagraph.className   = 'msg-ai';
+    aiParagraph.textContent = 'Pensando…';
+    document.getElementById('aBox').appendChild(aiParagraph);
+  }
+  return aiParagraph;
+}
+function clearAssistant() { document.getElementById('aBox').innerHTML=''; aiParagraph=null; aiBuffer=''; }
+function forceAsk() { socket?.emit('get_final_transcription'); socket?.emit('stop_recording'); }
 
-      function displayTranscription(text, isFinal) {
-        const transcriptionDiv = document.getElementById("transcription");
+// ---- UI ----
+function setStatus(cls, msg) { const e=document.getElementById('statusBar'); e.className=`status-bar ${cls}`; e.textContent=msg; }
+function toast(msg, type='info') {
+  const e=document.getElementById('toast');
+  e.textContent=msg;
+  e.style.background = type==='success'?'linear-gradient(135deg,#28a745,#20c997)':type==='error'?'linear-gradient(135deg,#dc3545,#c82333)':'linear-gradient(135deg,#17a2b8,#6f42c1)';
+  e.classList.add('show'); clearTimeout(e._t); e._t=setTimeout(()=>e.classList.remove('show'),3200);
+}
 
-        if (isFinal) {
-          const finalElement = document.createElement("div");
-          finalElement.className = "final";
-
-          // Resaltar comandos
-          const lowerText = text.toLowerCase();
-          if (lowerText.includes("hola alma")) {
-            finalElement.classList.add("command-detected");
-            finalElement.innerHTML = `🎯 <strong>Activación:</strong> ${text}`;
-          } else if (
-            lowerText.includes("gracias alma") ||
-            lowerText.includes("detente alma") ||
-            lowerText.includes("adiós alma") ||
-            lowerText.includes("hasta luego alma")
-          ) {
-            finalElement.classList.add("command-detected");
-            finalElement.style.background = "#f8d7da";
-            finalElement.style.borderLeftColor = "#dc3545";
-            finalElement.innerHTML = `🛑 <strong>Desactivación:</strong> ${text}`;
-          } else {
-            finalElement.textContent = text;
-          }
-
-          transcriptionDiv.appendChild(finalElement);
-
-          const interimElements =
-            transcriptionDiv.getElementsByClassName("interim");
-          while (interimElements.length > 0) {
-            interimElements[0].remove();
-          }
-        } else {
-          let interimElement = transcriptionDiv.querySelector(".interim");
-          if (!interimElement) {
-            interimElement = document.createElement("div");
-            interimElement.className = "interim";
-            transcriptionDiv.appendChild(interimElement);
-          }
-          interimElement.textContent = text;
-        }
-
-        transcriptionDiv.scrollTop = transcriptionDiv.scrollHeight;
-      }
-
-      async function startRecording() {
-        try {
-          console.log("Solicitando acceso al micrófono...");
-
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              sampleRate: SAMPLE_RATE,
-              channelCount: 1,
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-            },
-            video: false,
-          });
-
-          console.log("Micrófono accedido correctamente");
-
-          audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
-          const source = audioContext.createMediaStreamSource(stream);
-
-          analyser = audioContext.createAnalyser();
-          analyser.fftSize = 256;
-          source.connect(analyser);
-
-          const canvas = document.getElementById("audioVisualizer");
-          canvasCtx = canvas.getContext("2d");
-          canvas.width = canvas.offsetWidth;
-          canvas.height = canvas.offsetHeight;
-
-          visualizeAudio();
-
-          const processor = audioContext.createScriptProcessor(
-            CHUNK_SIZE,
-            1,
-            1
-          );
-
-          source.connect(processor);
-          processor.connect(audioContext.destination);
-
-          processor.onaudioprocess = (e) => {
-            if (!isRecording || !socket || !socket.connected) return;
-
-            const inputData = e.inputBuffer.getChannelData(0);
-            const pcmData = convertFloat32ToInt16(inputData);
-
-            socket.emit("audio_chunk", {
-              chunk: Array.from(pcmData),
-            });
-          };
-
-          isRecording = true;
-          document.getElementById("startBtn").disabled = true;
-          document.getElementById("stopBtn").disabled = false;
-          updateStatus("connected", "🎙️ Grabando... Habla ahora");
-
-          socket.emit("start_recording");
-
-          console.log("Grabación iniciada correctamente");
-        } catch (error) {
-          console.error("Error al acceder al micrófono:", error);
-          updateStatus("disconnected", "❌ Error al acceder al micrófono");
-          alert(
-            "No se pudo acceder al micrófono. Asegúrate de permitir el acceso y que el micrófono esté funcionando.\n\nError: " +
-              error.message
-          );
-        }
-      }
-
-      function stopRecording() {
-        if (stream) {
-          stream.getTracks().forEach((track) => track.stop());
-        }
-        if (audioContext) {
-          audioContext.close();
-        }
-        if (animationId) {
-          cancelAnimationFrame(animationId);
-        }
-
-        if (socket) {
-          // El backend consultará al LLM con el texto final acumulado
-          socket.emit("stop_recording");
-          socket.emit("get_final_transcription");
-        }
-
-        isRecording = false;
-        document.getElementById("startBtn").disabled = false;
-        document.getElementById("stopBtn").disabled = true;
-        updateStatus("connected", "✅ Conectado - Listo para grabar");
-
-        const canvas = document.getElementById("audioVisualizer");
-        canvasCtx = canvas.getContext("2d");
-        canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
-
-        console.log("Grabación detenida");
-      }
-
-      function convertFloat32ToInt16(buffer) {
-        const length = buffer.length;
-        const int16Array = new Int16Array(length);
-        for (let i = 0; i < length; i++) {
-          const sample = Math.max(-1, Math.min(1, buffer[i]));
-          int16Array[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-        }
-        return int16Array;
-      }
-
-      function visualizeAudio() {
-        if (!isRecording || !analyser) return;
-
-        const canvas = document.getElementById("audioVisualizer");
-        const width = canvas.width;
-        const height = canvas.height;
-
-        animationId = requestAnimationFrame(visualizeAudio);
-
-        const bufferLength = analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-        analyser.getByteFrequencyData(dataArray);
-
-        canvasCtx.fillStyle = "rgb(20, 20, 20)";
-        canvasCtx.fillRect(0, 0, width, height);
-
-        const barWidth = (width / bufferLength) * 2.5;
-        let barHeight;
-        let x = 0;
-
-        for (let i = 0; i < bufferLength; i++) {
-          barHeight = (dataArray[i] / 255) * height;
-
-          const gradient = canvasCtx.createLinearGradient(
-            0,
-            height - barHeight,
-            0,
-            height
-          );
-          gradient.addColorStop(0, "#667eea");
-          gradient.addColorStop(1, "#764ba2");
-
-          canvasCtx.fillStyle = gradient;
-          canvasCtx.fillRect(x, height - barHeight, barWidth, barHeight);
-
-          x += barWidth + 1;
-        }
-      }
-      function showCommandNotification(message, type) {
-        const notification = document.createElement("div");
-        notification.style.cssText = `
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    padding: 15px 20px;
-    border-radius: 8px;
-    color: white;
-    font-weight: bold;
-    z-index: 1000;
-    animation: slideIn 0.3s ease;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-  `;
-
-        if (type === "success") {
-          notification.style.background =
-            "linear-gradient(135deg, #28a745, #20c997)";
-        } else if (type === "info") {
-          notification.style.background =
-            "linear-gradient(135deg, #17a2b8, #6f42c1)";
-        }
-
-        notification.textContent = message;
-        document.body.appendChild(notification);
-
-        setTimeout(() => {
-          notification.remove();
-        }, 3000);
-      }
-
-      // Conectar al servidor cuando se carga la página
-      window.addEventListener("load", () => {
-        connectSocket();
-        console.log("Cliente inicializado, listo para conectar...");
-      });
-
-      // Manejar cierre de página
-      window.addEventListener("beforeunload", () => {
-        stopRecording();
-        if (socket) {
-          socket.close();
-        }
-      });
-    </script>
-  </body>
+// ---- Init ----
+window.addEventListener('load', () => {
+  initSocket();
+  showLogin();
+  window.addEventListener('beforeunload', ()=>{ stopRecording(); socket?.close(); });
+});
+</script>
+</body>
 </html>
