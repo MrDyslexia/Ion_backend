@@ -56,8 +56,27 @@ async function initDB() {
       created_at INTEGER DEFAULT (strftime('%s','now'))
     );
 
+    CREATE TABLE IF NOT EXISTS evaluations (
+      id                    TEXT PRIMARY KEY,
+      session_id            TEXT NOT NULL REFERENCES sessions(id),
+      patient_id            TEXT NOT NULL REFERENCES patients(id),
+      test_id               TEXT NOT NULL,
+      test_version          TEXT NOT NULL,
+      status                TEXT NOT NULL,
+      started_at            INTEGER NOT NULL,
+      ended_at              INTEGER,
+      answers               TEXT NOT NULL,
+      total_score           INTEGER,
+      max_score             INTEGER NOT NULL,
+      interpretation_level  TEXT,
+      interpretation_label  TEXT,
+      cancelled_at_question TEXT
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sessions_patient ON sessions(patient_id);
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+    CREATE INDEX IF NOT EXISTS idx_eval_patient     ON evaluations(patient_id);
+    CREATE INDEX IF NOT EXISTS idx_eval_session     ON evaluations(session_id);
   `);
 
   persist();
@@ -83,8 +102,8 @@ function run(sql, params = []) {
 
 /** Helper: devuelve array de filas como objetos */
 function all(sql, params = []) {
-  const stmt    = db.prepare(sql);
-  const rows    = [];
+  const stmt = db.prepare(sql);
+  const rows = [];
   stmt.bind(params);
   while (stmt.step()) rows.push(stmt.getAsObject());
   stmt.free();
@@ -106,11 +125,11 @@ const patientOps = {
   getById(id)  { return get(`SELECT * FROM patients WHERE id = ?`, [id]); },
   getAll()     { return all(`SELECT * FROM patients ORDER BY created_at DESC`); },
   update(id, fields) {
-    const allowed = ['name','age','clinical_notes'];
+    const allowed = ['name', 'age', 'clinical_notes'];
     const keys    = Object.keys(fields).filter(k => allowed.includes(k));
     if (!keys.length) return;
-    const sets  = keys.map(k => `${k} = ?`).join(', ');
-    const vals  = keys.map(k => fields[k]);
+    const sets = keys.map(k => `${k} = ?`).join(', ');
+    const vals = keys.map(k => fields[k]);
     run(`UPDATE patients SET ${sets}, updated_at = strftime('%s','now') WHERE id = ?`, [...vals, id]);
   },
   delete(id) { run(`DELETE FROM patients WHERE id = ?`, [id]); }
@@ -160,6 +179,107 @@ const messageOps = {
   }
 };
 
+/** ======================= Evaluations ======================= */
+const evaluationOps = {
+  /**
+   * Guarda el resultado completo de un test.
+   */
+  save(sessionId, patientId, result) {
+    const id = randomUUID();
+    run(
+      `INSERT INTO evaluations (
+        id, session_id, patient_id, test_id, test_version,
+        status, started_at, ended_at,
+        answers, total_score, max_score,
+        interpretation_level, interpretation_label,
+        cancelled_at_question
+      ) VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?, ?)`,
+      [
+        id,
+        sessionId,
+        patientId,
+        result.testId,
+        result.testVersion,
+        result.status,
+        result.startedAt,
+        result.endedAt || Date.now(),
+        JSON.stringify(result.answers),
+        result.totalScore ?? null,
+        result.maxScore,
+        result.interpretation?.level || null,
+        result.interpretation?.label || null,
+        result.cancelledAtQuestion   || null
+      ]
+    );
+    return id;
+  },
+
+  /**
+   * Retorna evaluaciones completadas de un paciente, más recientes primero.
+   */
+  getForPatient(patientId, limit = 20) {
+    return all(
+      `SELECT * FROM evaluations
+       WHERE patient_id = ? AND status = 'completed'
+       ORDER BY started_at DESC LIMIT ?`,
+      [patientId, limit]
+    ).map(e => ({ ...e, answers: JSON.parse(e.answers) }));
+  },
+
+  /**
+   * Retorna la evaluación más reciente de un paciente (cualquier estado).
+   */
+  getLatestForPatient(patientId) {
+    const row = get(
+      `SELECT * FROM evaluations
+       WHERE patient_id = ?
+       ORDER BY started_at DESC LIMIT 1`,
+      [patientId]
+    );
+    return row ? { ...row, answers: JSON.parse(row.answers) } : null;
+  },
+
+  /**
+   * ¿El paciente ya completó algún test hoy?
+   */
+  hasTestToday(patientId) {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const row = get(
+      `SELECT id FROM evaluations
+       WHERE patient_id = ? AND started_at >= ? AND status = 'completed'
+       LIMIT 1`,
+      [patientId, startOfDay.getTime()]
+    );
+    return !!row;
+  },
+
+  getById(id) {
+    const row = get(`SELECT * FROM evaluations WHERE id = ?`, [id]);
+    return row ? { ...row, answers: JSON.parse(row.answers) } : null;
+  },
+
+  /** Borra una evaluación por id (útil en desarrollo) */
+  deleteById(id) {
+    run(`DELETE FROM evaluations WHERE id = ?`, [id]);
+  },
+
+  /** Borra todas las evaluaciones de hoy para un paciente */
+  deleteForPatientToday(patientId) {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    run(
+      `DELETE FROM evaluations WHERE patient_id = ? AND started_at >= ?`,
+      [patientId, startOfDay.getTime()]
+    );
+  },
+
+  /** Borra TODAS las evaluaciones de un paciente */
+  deleteAllForPatient(patientId) {
+    run(`DELETE FROM evaluations WHERE patient_id = ?`, [patientId]);
+  }
+};
+
 /** ======================= buildDialog ======================= */
 const RECENT_MESSAGES    = 10;
 const COMPRESS_THRESHOLD = 20;
@@ -182,4 +302,13 @@ function buildDialog(systemPrompt, session) {
   return { dialog, needsCompression: total > COMPRESS_THRESHOLD };
 }
 
-module.exports = { initDB, patientOps, sessionOps, messageOps, buildDialog, COMPRESS_THRESHOLD, RECENT_MESSAGES };
+module.exports = {
+  initDB,
+  patientOps,
+  sessionOps,
+  messageOps,
+  evaluationOps,
+  buildDialog,
+  COMPRESS_THRESHOLD,
+  RECENT_MESSAGES
+};
