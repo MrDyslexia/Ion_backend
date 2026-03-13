@@ -34,6 +34,31 @@ function numberToWords(n) {
   return map[n] || null;
 }
 
+/** Convierte texto en español a número (para años como "veinte veintiséis" → 2026) */
+function wordsToNumber(text) {
+  const WORD_NUM = {
+    'cero':0,'uno':1,'dos':2,'tres':3,'cuatro':4,'cinco':5,'seis':6,'siete':7,
+    'ocho':8,'nueve':9,'diez':10,'once':11,'doce':12,'trece':13,'catorce':14,
+    'quince':15,'dieciseis':16,'diecisiete':17,'dieciocho':18,'diecinueve':19,
+    'veinte':20,'veintiuno':21,'veintidos':22,'veintitres':23,'veinticuatro':24,
+    'veinticinco':25,'veintiseis':26,'veintisiete':27,'veintiocho':28,'veintinueve':29,
+    'treinta':30,'cuarenta':40,'cincuenta':50,'sesenta':60,'setenta':70,'ochenta':80,
+    'noventa':90,'cien':100,'ciento':100,'doscientos':200,'trescientos':300,'mil':1000
+  };
+  const nums = text.split(/\s+/).map(w => WORD_NUM[w]).filter(n => n !== undefined);
+  if (!nums.length) return null;
+  // "veinte veintiséis" → [20,26] → concat como string → "2026"
+  const concat = nums.join('');
+  if (!isNaN(concat) && concat.length === 4) return parseInt(concat, 10);
+  // suma estándar para "dos mil veintiséis" → [2,1000,26] → 2026
+  let total = 0, cur = 0;
+  for (const n of nums) {
+    if (n === 1000) { total += (cur || 1) * 1000; cur = 0; }
+    else cur += n;
+  }
+  return total + cur;
+}
+
 // ── Scorers por modo ──────────────────────────────────────────────────────────
 
 function scoreBinary(question, answer) {
@@ -55,12 +80,16 @@ function scoreBinary(question, answer) {
     if (!correct && (text.includes(lastTwoStr) || (lastTwoWords && text.includes(lastTwoWords)))) {
       correct = true;
     }
-    // Aceptar "dos mil veinticinco", "veinte veinticinco" como año completo en palabras
-    // Extraer todos los números del texto y combinarlos
+    // Aceptar dígitos combinados: "20 26" → "2026"
     const digits = text.match(/\d+/g);
     if (!correct && digits) {
       const combined = digits.join('');
       if (combined === String(currentYear)) correct = true;
+    }
+    // Aceptar palabras numéricas: "veinte veintiséis" → 2026, "dos mil veintiséis" → 2026
+    if (!correct) {
+      const fromWords = wordsToNumber(text);
+      if (fromWords === currentYear) correct = true;
     }
   }
 

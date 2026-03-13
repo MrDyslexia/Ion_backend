@@ -63,7 +63,7 @@ class SixCITTest extends BaseTest {
       const endedAt        = Date.now();
       const interpretation = interpretScore(totalScore);
 
-      await runner.say('Hemos terminado. Muchas gracias.');
+      // El post-test en server.js retoma conversación via LLM — no decir nada aquí
 
       console.log(`✅ [6CIT] Score: ${totalScore}/${MAX_TOTAL_SCORE} — ${interpretation.label}`);
 

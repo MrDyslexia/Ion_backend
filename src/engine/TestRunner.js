@@ -87,8 +87,9 @@ class TestRunner {
     this._vadResolve     = null;
     this._vadTimeout     = null;   // timeout máximo sin STT
     this._vadAccumulated = [];     // fragmentos STT acumulados durante habla
-    this._collectMode    = 'single';
+    this._collectMode     = 'single';
     this._currentQuestion = '';
+    this._allAccumulated  = [];  // acumula STT entre el primer intento y el retry (modo VAD)
   }
 
   // ── TTS ──────────────────────────────────────────────────────────────────────
@@ -218,13 +219,13 @@ class TestRunner {
 
   // ── Espera interna: modo VAD ──────────────────────────────────────────────────
 
-  _waitVAD() {
+  _waitVAD(silenceMs = null) {
     this._vadAccumulated = [];
-    this.ctx.vadEnabled  = true;  // activar detección de energía en audio_chunk
+    this.ctx.vadEnabled  = true;
+    if (silenceMs !== null) this.ctx.vadSilenceMs = silenceMs;
 
     return new Promise(resolve => {
       this._vadResolve = resolve;
-      // Timeout máximo por si el VAD no detecta nada
       this._vadTimeout = setTimeout(() => this._vadTimeoutFired(), TIMEOUT_FIRST_LONG);
     });
   }
@@ -251,10 +252,16 @@ class TestRunner {
     this._collectMode = mode;
     this.state = STATE.WAITING_RESPONSE;
 
+    // Silencio más generoso para meses (el paciente puede pausar entre meses)
+    const silenceMs = questionId === 'months_reverse' ? 2800 : 1800;
+    this._allAccumulated = [];
+
     // ── Intento 1 ─────────────────────────────────────────────────────────────
     const first = mode === 'vad'
-      ? await this._waitVAD()
+      ? await this._waitVAD(silenceMs)
       : await this._waitSingle(TIMEOUT_FIRST_SHORT);
+
+    if (mode === 'vad' && first.text) this._allAccumulated.push(first.text);
 
     if (first.timedOut || !first.text) {
       // Sin respuesta → repetir pregunta una vez
@@ -263,7 +270,7 @@ class TestRunner {
       this.state = STATE.WAITING_RESPONSE;
 
       const second = mode === 'vad'
-        ? await this._waitVAD()
+        ? await this._waitVAD(silenceMs)
         : await this._waitSingle(TIMEOUT_RETRY);
 
       if (second.timedOut || !second.text) return { status: 'no_response', text: null };
@@ -280,19 +287,36 @@ class TestRunner {
     const validity = await isValidResponse(questionText, first.text);
 
     if (validity === 'noise') {
+      // En modo VAD para preguntas largas: el paciente pudo haber continuado
+      // hablando después del primer silencio. Hacer retry SIN decir nada
+      // (solo esperar otro fragmento), combinando con lo ya capturado.
+      if (mode === 'vad') {
+        this._collectMode = mode;
+        this.state = STATE.WAITING_RESPONSE;
+        const retry = await this._waitVAD(silenceMs);
+        if (!retry.timedOut && retry.text) {
+          this._allAccumulated.push(retry.text);
+          const combined = this._allAccumulated.join(' ');
+          const v2 = await isValidResponse(questionText, combined);
+          if (v2 !== 'noise') return { status: 'answered', text: combined };
+        }
+      }
       await this.say('Disculpe, no le entendí bien. ¿Puede repetir su respuesta?');
       this._collectMode = mode;
       this.state = STATE.WAITING_RESPONSE;
 
       const retry = mode === 'vad'
-        ? await this._waitVAD()
+        ? await this._waitVAD(silenceMs)
         : await this._waitSingle(TIMEOUT_RETRY);
 
       if (retry.timedOut || !retry.text) return { status: 'unclear', text: null };
       if (await isCancelIntent(retry.text)) await this._handleCancelConfirm(questionText);
       const v2 = await isValidResponse(questionText, retry.text);
       if (v2 === 'noise') return { status: 'unclear', text: null };
-      return { status: 'answered', text: retry.text };
+      const finalText = mode === 'vad'
+        ? [...this._allAccumulated, retry.text].join(' ')
+        : retry.text;
+      return { status: 'answered', text: finalText };
     }
 
     return { status: 'answered', text: first.text };

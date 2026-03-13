@@ -28,11 +28,29 @@ async function callLLM(systemPrompt, userContent) {
 }
 
 /**
+ * Valida si un texto parece una dirección (para address_recall).
+ * Evita llamar al LLM para este caso, ya que el STT puede transcribir
+ * la dirección de forma diferente (números en palabras, fragmentos, etc.)
+ */
+function looksLikeAddress(text) {
+  const t = (text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  // Palabras clave de la dirección objetivo
+  const addressKeywords = ['manuel','rodriguez','mil','trescientos','setenta','tres','13','1373','santiago'];
+  const matches = addressKeywords.filter(k => t.includes(k));
+  return matches.length >= 2;  // al menos 2 componentes reconocibles
+}
+
+/**
  * ¿El texto es una respuesta válida a la pregunta?
  * Retorna: 'valid' | 'noise'
  */
 async function isValidResponse(questionContext, transcribedText) {
   if (!transcribedText || transcribedText.trim().length < 2) return 'noise';
+
+  // Bypass para address_recall: si contiene fragmentos de dirección, es válido
+  if (questionContext && questionContext.toLowerCase().includes('direcci') && looksLikeAddress(transcribedText)) {
+    return 'valid';
+  }
 
   const system = `Eres un clasificador. Responde SOLO con una palabra: "valid" o "noise".
 "valid" si el paciente intenta responder la pregunta, aunque sea incorrectamente.

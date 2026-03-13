@@ -1,60 +1,79 @@
-require('dotenv').config();
-const express  = require('express');
-const http     = require('http');
-const socketIo = require('socket.io');
-const wav      = require('wav');
-const fs       = require('fs');
-const path     = require('path');
+require("dotenv").config();
+const express = require("express");
+const http = require("http");
+const socketIo = require("socket.io");
+const wav = require("wav");
+const fs = require("fs");
+const path = require("path");
 
 const {
-  initDB, patientOps, sessionOps, messageOps,
-  evaluationOps, buildDialog, COMPRESS_THRESHOLD
-} = require('./db');
+  initDB,
+  patientOps,
+  sessionOps,
+  messageOps,
+  evaluationOps,
+  buildDialog,
+  COMPRESS_THRESHOLD,
+} = require("./db");
 
-const { TestRunner, CancelledError } = require('./engine/TestRunner');
-const { getTest }                    = require('./engine/tests/registry');
+const { TestRunner, CancelledError } = require("./engine/TestRunner");
+const { getTest } = require("./engine/tests/registry");
 
-const app    = express();
+const app = express();
 const server = http.createServer(app);
-const io     = socketIo(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
+const io = socketIo(server, {
+  cors: { origin: "*", methods: ["GET", "POST"] },
+});
 
 app.use(express.json());
-app.use(express.static('public'));
+app.use(express.static("public"));
 
 /** ======================= Directorios ======================= */
-const audioDir  = path.join(__dirname, '../audio');
-const modelsDir = path.join(__dirname, 'models');
-[audioDir, modelsDir].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); });
+const audioDir = path.join(__dirname, "../audio");
+const modelsDir = path.join(__dirname, "models");
+[audioDir, modelsDir].forEach((d) => {
+  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+});
 
 /** ======================= Config ======================= */
-const SAVE_AUDIO   = process.env.SAVE_AUDIO === 'true';
-const LLM_BASE_URL = process.env.LLM_BASE_URL  || 'http://localhost:11434';
-const LLM_MODEL    = process.env.LLM_MODEL     || 'qwen2.5:7b';
-const LLM_MAX_TOK  = parseInt(process.env.LLM_MAX_TOKENS || '512', 10);
-const TTS_URL      = process.env.TTS_URL        || 'http://localhost:8002';
-const PORT         = parseInt(process.env.PORT  || '3000', 10);
+const SAVE_AUDIO = process.env.SAVE_AUDIO === "true";
+const LLM_BASE_URL = process.env.LLM_BASE_URL || "http://localhost:11434";
+const LLM_MODEL = process.env.LLM_MODEL || "qwen2.5:7b";
+const LLM_MAX_TOK = parseInt(process.env.LLM_MAX_TOKENS || "512", 10);
+const TTS_URL = process.env.TTS_URL || "http://localhost:8002";
+const PORT = parseInt(process.env.PORT || "3000", 10);
 
 // Paciente por defecto para sesiones de prueba
-const DEFAULT_PATIENT_ID   = process.env.DEFAULT_PATIENT_ID   || 'DEV-001';
-const DEFAULT_PATIENT_NAME = process.env.DEFAULT_PATIENT_NAME || 'Paciente de Prueba';
-const DEFAULT_PATIENT_AGE  = parseInt(process.env.DEFAULT_PATIENT_AGE || '70', 10);
+const DEFAULT_PATIENT_ID = process.env.DEFAULT_PATIENT_ID || "DEV-001";
+const DEFAULT_PATIENT_NAME =
+  process.env.DEFAULT_PATIENT_NAME || "Paciente de Prueba";
+const DEFAULT_PATIENT_AGE = parseInt(
+  process.env.DEFAULT_PATIENT_AGE || "70",
+  10,
+);
 
 /** ======================= Vosk ======================= */
-let vosk        = null;
-let voskModel   = null;
+let vosk = null;
+let voskModel = null;
 let isVoskReady = false;
 
 const initVosk = async () => {
   try {
-    console.log('🔄 Inicializando Vosk...');
-    vosk = await import('vosk');
-    const modelPath = path.join(modelsDir, 'vosk-model-es-0.42');
-    if (!fs.existsSync(modelPath)) { console.log('⚠️  Modelo Vosk no encontrado en', modelPath); return false; }
-    voskModel   = new vosk.Model(modelPath);
+    console.log("🔄 Inicializando Vosk...");
+    vosk = await import("vosk");
+    const modelPath = path.join(modelsDir, "vosk-model-es-0.42");
+    if (!fs.existsSync(modelPath)) {
+      console.log("⚠️  Modelo Vosk no encontrado en", modelPath);
+      return false;
+    }
+    voskModel = new vosk.Model(modelPath);
     isVoskReady = true;
-    console.log('✅ Vosk listo');
+    console.log("✅ Vosk listo");
     return true;
-  } catch (e) { console.error('❌ Vosk:', e); return false; }
+  } catch (e) {
+    console.error("❌ Vosk:", e);
+    return false;
+  }
 };
 
 /** ======================= TTS ======================= */
@@ -62,9 +81,9 @@ async function synthesizeSpeech(text) {
   const _t0tts = Date.now();
   try {
     const resp = await fetch(`${TTS_URL}/synthesize`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ text, language: 'es' })
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, language: "es" }),
     });
     if (!resp.ok) throw new Error(`TTS HTTP ${resp.status}`);
     const arrayBuf = await resp.arrayBuffer();
@@ -83,94 +102,82 @@ async function synthesizeSpeech(text) {
 /** ======================= System prompt ======================= */
 function buildSystemPrompt(patient) {
   const now = new Date();
-  const ts  = now.toLocaleString('es-CL', {
-    weekday: 'short', day: 'numeric', month: 'short',
-    year: 'numeric', hour: '2-digit', minute: '2-digit'
+  const ts = now.toLocaleDateString("es-CL", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
   });
-  const notas = patient.clinical_notes ? ` Notas clínicas: ${patient.clinical_notes}.` : '';
+  const notas = patient.clinical_notes
+    ? ` Notas clínicas: ${patient.clinical_notes}.`
+    : "";
 
   return `Eres ALMA, asistente de salud cognitiva. Responde siempre en español. Sé breve, cálido y empático.
-Fecha y hora actual: ${ts}.
+Fecha actual: ${ts}.
 Paciente: ${patient.name}, ${patient.age} años.${notas}
 
-Al inicio de la conversación, saluda al paciente y pregunta cómo se siente hoy.
-Cuando el paciente esté dispuesto y lo pida o lo acepte, ofrécele una evaluación breve de memoria.
-Si acepta, usa la herramienta conduct_test con testId "sixcit".
+Cuando el paciente te salude, responde con un saludo breve y pregunta cómo se siente.
+Cuando el paciente esté dispuesto, ofrécele una evaluación breve de memoria.
+Si acepta, usa la herramienta conduct_test con testId "sixcit" UNA SOLA VEZ.
 NO administres el test manualmente. NO hagas preguntas de evaluación tú mismo.
-La evaluación la conduce el sistema de forma estructurada.`;
+La evaluación la conduce el sistema de forma estructurada.
+Cuando el paciente se despida, el sistema maneja la despedida automáticamente — tú NO debes despedirte.`;
 }
 
 /** ======================= Function calling ======================= */
 const LLM_TOOLS = [
   {
-    type: 'function',
+    type: "function",
     function: {
-      name: 'get_datetime',
-      description: 'Obtiene la fecha y hora actual del sistema.',
-      parameters: { type: 'object', properties: {}, required: [] }
-    }
+      name: "get_datetime",
+      description: "Obtiene la fecha y hora actual del sistema.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
   },
   {
-    type: 'function',
+    type: "function",
     function: {
-      name: 'search_web',
-      description: 'Busca información en la web usando DuckDuckGo.',
+      name: "conduct_test",
+      description:
+        "Conduce una evaluación cognitiva estructurada con el paciente. Úsala cuando el paciente acepte realizar una evaluación.",
       parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Consulta de búsqueda en español' }
-        },
-        required: ['query']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'conduct_test',
-      description: 'Conduce una evaluación cognitiva estructurada con el paciente. Úsala cuando el paciente acepte realizar una evaluación.',
-      parameters: {
-        type: 'object',
+        type: "object",
         properties: {
           testId: {
-            type: 'string',
-            enum: ['sixcit'],
-            description: 'Identificador del test a realizar'
-          }
+            type: "string",
+            enum: ["sixcit"],
+            description: "Identificador del test a realizar",
+          },
         },
-        required: ['testId']
-      }
-    }
-  }
+        required: ["testId"],
+      },
+    },
+  },
 ];
 
 async function executeTool(name, args, ctx) {
-  if (name === 'get_datetime') {
-    return new Date().toLocaleString('es-CL', {
-      weekday: 'long', year: 'numeric', month: 'long',
-      day: 'numeric', hour: '2-digit', minute: '2-digit'
+  if (name === "get_datetime") {
+    return new Date().toLocaleString("es-CL", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
     });
   }
 
-  if (name === 'search_web') {
-    try {
-      const q   = encodeURIComponent(args.query || '');
-      const r   = await fetch(`https://api.duckduckgo.com/?q=${q}&format=json&no_redirect=1&no_html=1`);
-      const d   = await r.json();
-      const ans = d.AbstractText || d.Answer || d.RelatedTopics?.[0]?.Text || '';
-      return ans || 'Sin resultados disponibles.';
-    } catch (e) { return `Error en búsqueda: ${e.message}`; }
-  }
-
-  if (name === 'conduct_test') {
+  if (name === "conduct_test") {
     const { testId } = args;
-    if (!testId) return 'Error: se requiere testId.';
-    if (!ctx)    return 'Error: contexto de sesión no disponible.';
+    if (!testId) return "Error: se requiere testId.";
+    if (!ctx) return "Error: contexto de sesión no disponible.";
 
-    if (ctx.activeRunner) return 'Ya hay una evaluación en curso.';
+    if (ctx.activeRunner) return "Ya hay una evaluación en curso.";
+    if (ctx.testDoneThisSession)
+      return "Ya se realizó una evaluación en esta sesión. No la repitas.";
 
     if (evaluationOps.hasTestToday(ctx.patient.id)) {
-      return 'El paciente ya realizó una evaluación hoy. No es necesario repetirla.';
+      return "El paciente ya realizó una evaluación hoy. No es necesario repetirla.";
     }
 
     // Lanzar el test de forma asíncrona, sin bloquear el tool call del LLM
@@ -178,35 +185,93 @@ async function executeTool(name, args, ctx) {
       const runner = new TestRunner(ctx);
       ctx.activeRunner = runner;
       try {
-        const test   = getTest(testId);
+        const test = getTest(testId);
         const result = await test.run(ctx, runner);
-        evaluationOps.save(ctx.sessionId, ctx.patient.id, result);
-        console.log(`✅ [Test] ${testId} → ${result.status}, score: ${result.totalScore}/${result.maxScore}`);
 
-        // Informar al LLM del resultado — pasar ctx para que conduct_test no se llame de nuevo
-        // Post-test: limpiar el diálogo de entradas del test para que el LLM
-        // no tenga acceso a puntajes ni resultados en la próxima interacción.
-        // Se eliminan tool_calls, tool results y mensajes de sistema del test.
-        ctx.dialog = ctx.dialog.filter(m => {
-          if (m.role === 'tool')      return false;  // tool results con puntajes
-          if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) return false;
-          if (m.role === 'system'    && m.content?.includes('conduct_test'))    return false;
-          if (m.role === 'system'    && m.content?.includes('evaluación'))      return false;
-          if (m.role === 'system'    && m.content?.includes('Evaluación'))      return false;
+        // ── Guardar en BD en background (no bloquear el flujo de voz) ──
+        setImmediate(() => {
+          try {
+            evaluationOps.save(ctx.sessionId, ctx.patient.id, result);
+            console.log(
+              `✅ [Test] ${testId} guardado → ${result.status}, score: ${result.totalScore}/${result.maxScore}`,
+            );
+          } catch (e) {
+            console.error("❌ [Test] Error guardando evaluación:", e.message);
+          }
+        });
+
+        // ── Limpiar el diálogo ANTES de hablar (sin datos de puntaje) ──
+        ctx.dialog = ctx.dialog.filter((m) => {
+          if (m.role === "tool") return false;
+          if (
+            m.role === "assistant" &&
+            Array.isArray(m.tool_calls) &&
+            m.tool_calls.length
+          )
+            return false;
+          if (m.role === "system" && m.content?.includes("conduct_test"))
+            return false;
+          if (m.role === "system" && m.content?.includes("evaluación"))
+            return false;
+          if (m.role === "system" && m.content?.includes("Evaluación"))
+            return false;
           return true;
         });
-        // Agregar nota de sistema mínima: solo instrucción de comportamiento, sin datos del test
-        ctx.dialog.push({ role: 'system', content: 'No invoques conduct_test en esta sesión.' });
-        ctx.conversationActive = false;
-        console.log(`🔕 [Test] Post-test: diálogo limpiado, ALMA en espera pasiva.`);
+        ctx.testDoneThisSession = true;
+        ctx.activeRunner = null; // limpiar ANTES de emitir para evitar suppress TTS
+
+        // ── Emitir frase de cierre/retoma directamente via TTS (sin LLM) ──
+        // El LLM tiende a ignorar el resumePrompt y saludar de nuevo.
+        // La frase hardcoded garantiza el comportamiento correcto.
+        const resumeText =
+          result.status === "cancelled"
+            ? "Hemos detenido la evaluación. Muchas gracias por su participación. ¿Hay algo en lo que pueda ayudarle?"
+            : "Hemos terminado la evaluación. Muchas gracias por su participación. ¿Tiene alguna pregunta o hay algún tema en el que pueda ayudarle?";
+
+        ctx.socket.emit("assistant_text", { delta: resumeText });
+        ctx.socket.emit("assistant_text_done", { text: resumeText });
+        // Agregar al diálogo como mensaje de ALMA para mantener coherencia
+        ctx.dialog.push({ role: "assistant", content: resumeText });
+
+        ctx.conversationActive = true;
+        console.log(
+          `🔄 [Test] Post-test: frase de cierre emitida, conversación activa`,
+        );
+
+        // TTS en background — no bloquea
+        synthesizeSpeech(resumeText)
+          .then((buf) => {
+            if (buf)
+              ctx.socket.emit("tts_audio", {
+                audio: buf.toString("base64"),
+                mimeType: "audio/wav",
+              });
+          })
+          .catch((e) => console.error("❌ TTS post-test:", e.message));
       } catch (e) {
         if (e instanceof CancelledError) {
           console.log(`⚠️  [Test] ${testId} cancelado por el paciente`);
+          ctx.activeRunner = null;
+          ctx.testDoneThisSession = true;
+          ctx.conversationActive = true;
+          const cancelText =
+            "Hemos detenido la evaluación. No se preocupe. ¿Hay algo en lo que pueda ayudarle?";
+          ctx.socket.emit("assistant_text", { delta: cancelText });
+          ctx.socket.emit("assistant_text_done", { text: cancelText });
+          ctx.dialog.push({ role: "assistant", content: cancelText });
+          synthesizeSpeech(cancelText)
+            .then((buf) => {
+              if (buf)
+                ctx.socket.emit("tts_audio", {
+                  audio: buf.toString("base64"),
+                  mimeType: "audio/wav",
+                });
+            })
+            .catch(console.error);
         } else {
           console.error(`❌ [Test] ${testId} error inesperado:`, e.message);
+          ctx.activeRunner = null;
         }
-      } finally {
-        ctx.activeRunner = null;
       }
     });
 
@@ -215,51 +280,57 @@ async function executeTool(name, args, ctx) {
     return `Iniciando evaluación ${testId}. El sistema tomará control del flujo de voz.`;
   }
 
-  return 'Herramienta desconocida.';
+  return "Herramienta desconocida.";
 }
 
 /** ======================= LLM streaming + tool use ======================= */
 async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
-  socket.emit('assistant_status', { status: 'thinking' });
+  socket.emit("assistant_status", { status: "thinking" });
   const _t0llm = Date.now();
   let _firstTokenLogged = false;
 
   const MAX_ITER = 3;
   let iter = 0;
-  let fullResponse = '';
+  let fullResponse = "";
 
   while (iter < MAX_ITER) {
     iter++;
     const body = {
-      model:    LLM_MODEL,
+      model: LLM_MODEL,
       messages: dialog,
-      stream:   true,
-      tools:    LLM_TOOLS,
-      options:  { num_predict: LLM_MAX_TOK, temperature: 0.3, top_p: 0.9 }
+      stream: true,
+      tools: LLM_TOOLS,
+      options: { num_predict: LLM_MAX_TOK, temperature: 0.3, top_p: 0.9 },
     };
 
     const resp = await fetch(`${LLM_BASE_URL}/api/chat`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(body)
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
     if (!resp.ok || !resp.body) throw new Error(`LLM HTTP ${resp.status}`);
 
-    const reader  = resp.body.getReader();
+    const reader = resp.body.getReader();
     const decoder = new TextDecoder();
-    let buf = '', streamText = '', toolCall = null;
+    let buf = "",
+      streamText = "",
+      toolCall = null;
 
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
       let idx;
-      while ((idx = buf.indexOf('\n')) >= 0) {
+      while ((idx = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, idx).trim();
         buf = buf.slice(idx + 1);
         if (!line) continue;
         let data;
-        try { data = JSON.parse(line); } catch { continue; }
+        try {
+          data = JSON.parse(line);
+        } catch {
+          continue;
+        }
         if (data.message?.content) {
           const delta = data.message.content;
           if (!_firstTokenLogged) {
@@ -267,9 +338,10 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
             _firstTokenLogged = true;
           }
           streamText += delta;
-          socket.emit('assistant_text', { delta });
+          socket.emit("assistant_text", { delta });
         }
-        if (data.message?.tool_calls?.length) toolCall = data.message.tool_calls[0];
+        if (data.message?.tool_calls?.length)
+          toolCall = data.message.tool_calls[0];
       }
     }
 
@@ -280,23 +352,25 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
       // Pasar ctx solo para conduct_test
       const result = await executeTool(fnName, fnArgs, ctx);
       console.log(`🔧 Result: ${result}`);
-      dialog.push({ role: 'assistant', content: '', tool_calls: [toolCall] });
-      dialog.push({ role: 'tool',      content: result });
+      dialog.push({ role: "assistant", content: "", tool_calls: [toolCall] });
+      dialog.push({ role: "tool", content: result });
       continue;
     }
 
     fullResponse = streamText;
-    console.log(`⏱️  [LLM ] respuesta completa (${fullResponse.length} chars) → ${Date.now() - _t0llm}ms`);
+    console.log(
+      `⏱️  [LLM ] respuesta completa (${fullResponse.length} chars) → ${Date.now() - _t0llm}ms`,
+    );
     break;
   }
 
   if (fullResponse.trim() && sessionId) {
-    messageOps.add(sessionId, 'assistant', fullResponse);
-    dialog.push({ role: 'assistant', content: fullResponse });
+    messageOps.add(sessionId, "assistant", fullResponse);
+    dialog.push({ role: "assistant", content: fullResponse });
   }
 
-  socket.emit('assistant_text_done', { text: fullResponse });
-  socket.emit('assistant_status',    { status: 'idle' });
+  socket.emit("assistant_text_done", { text: fullResponse });
+  socket.emit("assistant_status", { status: "idle" });
 
   if (sessionId && messageOps.countForSession(sessionId) > COMPRESS_THRESHOLD) {
     compressContext(sessionId, dialog, patient).catch(console.error);
@@ -307,11 +381,17 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
   if (ctx) ctx._testJustStarted = false;
 
   if (fullResponse.trim() && !suppressTTS) {
-    synthesizeSpeech(fullResponse).then(audioBuf => {
-      if (audioBuf) socket.emit('tts_audio', { audio: audioBuf.toString('base64'), mimeType: 'audio/wav' });
-    }).catch(e => console.error('❌ TTS pipeline:', e.message));
+    synthesizeSpeech(fullResponse)
+      .then((audioBuf) => {
+        if (audioBuf)
+          socket.emit("tts_audio", {
+            audio: audioBuf.toString("base64"),
+            mimeType: "audio/wav",
+          });
+      })
+      .catch((e) => console.error("❌ TTS pipeline:", e.message));
   } else if (suppressTTS && fullResponse.trim()) {
-    console.log('🔇 [LLM ] TTS suprimido — runner activo');
+    console.log("🔇 [LLM ] TTS suprimido — runner activo");
   }
 
   return fullResponse;
@@ -319,20 +399,30 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
 
 /** ======================= Compresión de contexto ======================= */
 async function compressContext(sessionId, dialog, patient) {
-  const allMsgs = dialog.filter(m => m.role !== 'system');
+  const allMsgs = dialog.filter((m) => m.role !== "system");
   if (allMsgs.length < 10) return;
   const toCompress = allMsgs.slice(0, allMsgs.length - 10);
-  const prompt = `Resume brevemente esta conversación entre ALMA y el paciente ${patient.name}. Máximo 3 oraciones.\n\n${toCompress.map(m => `${m.role === 'user' ? 'Paciente' : 'ALMA'}: ${m.content}`).join('\n')}`;
+  const prompt = `Resume brevemente esta conversación entre ALMA y el paciente ${patient.name}. Máximo 3 oraciones.\n\n${toCompress.map((m) => `${m.role === "user" ? "Paciente" : "ALMA"}: ${m.content}`).join("\n")}`;
   try {
     const resp = await fetch(`${LLM_BASE_URL}/api/chat`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ model: LLM_MODEL, messages: [{ role: 'user', content: prompt }], stream: false, options: { num_predict: 200, temperature: 0.3 } })
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: LLM_MODEL,
+        messages: [{ role: "user", content: prompt }],
+        stream: false,
+        options: { num_predict: 200, temperature: 0.3 },
+      }),
     });
     const d = await resp.json();
     const summary = d.message?.content?.trim();
-    if (summary) { sessionOps.saveSummary(sessionId, summary); console.log(`🗜️  Contexto comprimido: ${sessionId}`); }
-  } catch (e) { console.error('❌ Compresión:', e.message); }
+    if (summary) {
+      sessionOps.saveSummary(sessionId, summary);
+      console.log(`🗜️  Contexto comprimido: ${sessionId}`);
+    }
+  } catch (e) {
+    console.error("❌ Compresión:", e.message);
+  }
 }
 
 /** ======================= SessionContext ======================= */
@@ -340,52 +430,84 @@ const activeSessions = new Map();
 
 class SessionContext {
   constructor(socket, patient, sessionId, dialog) {
-    this.socket             = socket;
-    this.patient            = patient;
-    this.sessionId          = sessionId;
-    this.dialog             = dialog;
-    this.voskRec            = null;
-    this.isRecording        = false;
+    this.socket = socket;
+    this.patient = patient;
+    this.sessionId = sessionId;
+    this.dialog = dialog;
+    this.voskRec = null;
+    this.isRecording = false;
     this.conversationActive = false;
-    this.userBuffer         = '';
-    this.wavWriter          = null;
-    this.lastPartial        = '';
-    this.chunksReceived     = 0;
-    this.firstChunkTime     = null;
-    this.activeRunner       = null;   // TestRunner activo, null si no hay test en curso
-    this._testJustStarted   = false;  // flag para suprimir TTS del LLM al iniciar test
+    this.userBuffer = "";
+    this.wavWriter = null;
+    this.lastPartial = "";
+    this.chunksReceived = 0;
+    this.firstChunkTime = null;
+    this.activeRunner = null; // TestRunner activo, null si no hay test en curso
+    this._testJustStarted = false; // flag para suprimir TTS del LLM al iniciar test
+    this.testDoneThisSession = false; // flag para bloquear conduct_test post-test
+    this._byeCooldown = false; // bloquear STT extra tras despedida
     // VAD state (solo activo durante test)
-    this.vadEnabled         = false;
-    this.vadIsSpeaking      = false;
-    this.vadSilenceTimer    = null;
-    this.vadSilenceMs       = 1800;   // ms de silencio para declarar fin de habla
-    this.vadSpeechThreshold = 300;    // RMS mínimo para considerar habla (0–32767)
+    this.vadEnabled = false;
+    this.vadIsSpeaking = false;
+    this.vadSilenceTimer = null;
+    this.vadSilenceMs = 1800; // ms de silencio para declarar fin de habla
+    this.vadSpeechThreshold = 300; // RMS mínimo para considerar habla (0–32767)
   }
 
   createVoskRec() {
     if (!isVoskReady || !voskModel) return;
-    try { this.voskRec = new vosk.Recognizer({ model: voskModel, sampleRate: 16000 }); this.voskRec.setWords(true); }
-    catch (e) { console.error('❌ Vosk recognizer:', e); }
+    try {
+      this.voskRec = new vosk.Recognizer({
+        model: voskModel,
+        sampleRate: 16000,
+      });
+      this.voskRec.setWords(true);
+    } catch (e) {
+      console.error("❌ Vosk recognizer:", e);
+    }
   }
 
   freeVoskRec() {
-    if (this.voskRec) { try { this.voskRec.free(); } catch {} this.voskRec = null; }
+    if (this.voskRec) {
+      try {
+        this.voskRec.free();
+      } catch {}
+      this.voskRec = null;
+    }
   }
 
   startWavWriter() {
     if (!SAVE_AUDIO) return;
-    const filename = path.join(audioDir, `audio_${this.socket.id}_${Date.now()}.wav`);
-    this.wavWriter = new wav.FileWriter(filename, { sampleRate: 16000, channels: 1, bitDepth: 16 });
-    this.wavWriter.on('error', e => console.error('❌ WAV writer:', e.message));
+    const filename = path.join(
+      audioDir,
+      `audio_${this.socket.id}_${Date.now()}.wav`,
+    );
+    this.wavWriter = new wav.FileWriter(filename, {
+      sampleRate: 16000,
+      channels: 1,
+      bitDepth: 16,
+    });
+    this.wavWriter.on("error", (e) =>
+      console.error("❌ WAV writer:", e.message),
+    );
   }
 
   endWavWriter() {
-    if (this.wavWriter) { try { this.wavWriter.end(); } catch {} this.wavWriter = null; }
+    if (this.wavWriter) {
+      try {
+        this.wavWriter.end();
+      } catch {}
+      this.wavWriter = null;
+    }
   }
 
   writeAudioChunk(buf) {
     if (SAVE_AUDIO && this.wavWriter && this.isRecording) {
-      try { this.wavWriter.write(buf); } catch (e) { console.error('❌ Write chunk:', e.message); }
+      try {
+        this.wavWriter.write(buf);
+      } catch (e) {
+        console.error("❌ Write chunk:", e.message);
+      }
     }
   }
 
@@ -399,7 +521,8 @@ class SessionContext {
 
     // Calcular RMS del chunk
     let sum = 0;
-    for (let i = 0; i < int16Array.length; i++) sum += int16Array[i] * int16Array[i];
+    for (let i = 0; i < int16Array.length; i++)
+      sum += int16Array[i] * int16Array[i];
     const rms = Math.sqrt(sum / int16Array.length);
 
     if (rms >= this.vadSpeechThreshold) {
@@ -420,7 +543,7 @@ class SessionContext {
   }
 
   resetVAD() {
-    this.vadEnabled    = false;
+    this.vadEnabled = false;
     this.vadIsSpeaking = false;
     clearTimeout(this.vadSilenceTimer);
     this.vadSilenceTimer = null;
@@ -431,71 +554,98 @@ class SessionContext {
 function processVoiceCommands(text, ctx) {
   const t = text.toLowerCase().trim();
 
-  if (t.includes('hola alma') && !ctx.conversationActive) {
-    const question = t.split('hola alma')[1]?.trim() || '';
+  if (t.includes("hola alma") && !ctx.conversationActive) {
+    const question = t.split("hola alma")[1]?.trim() || "";
     ctx.conversationActive = true;
-    if (question) { ctx.dialog.push({ role: 'user', content: question }); messageOps.add(ctx.sessionId, 'user', question); }
-    return { isCommand: true, action: 'start_conversation', question, greet: !question };
+    if (question) {
+      ctx.dialog.push({ role: "user", content: question });
+      messageOps.add(ctx.sessionId, "user", question);
+    }
+    return {
+      isCommand: true,
+      action: "start_conversation",
+      question,
+      greet: !question,
+    };
   }
 
-  const stopCmds = ['gracias alma', 'detente alma', 'adiós alma', 'hasta luego alma', 'para alma'];
-  if (stopCmds.some(c => t.includes(c)) && ctx.conversationActive) {
+  const stopCmds = [
+    "gracias alma",
+    "detente alma",
+    "adiós alma",
+    "hasta luego alma",
+    "para alma",
+  ];
+  if (stopCmds.some((c) => t.includes(c)) && ctx.conversationActive) {
     ctx.conversationActive = false;
-    ctx.userBuffer = '';
-    return { isCommand: true, action: 'stop_conversation', farewell: true };
+    ctx.userBuffer = "";
+    return { isCommand: true, action: "stop_conversation", farewell: true };
   }
 
   if (ctx.conversationActive && t) {
-    ctx.userBuffer += (ctx.userBuffer ? ' ' : '') + t;
-    return { isCommand: false, action: 'continue_conversation' };
+    ctx.userBuffer += (ctx.userBuffer ? " " : "") + t;
+    return { isCommand: false, action: "continue_conversation" };
   }
 
-  if (!ctx.conversationActive && t) ctx.userBuffer += (ctx.userBuffer ? ' ' : '') + t;
+  if (!ctx.conversationActive && t)
+    ctx.userBuffer += (ctx.userBuffer ? " " : "") + t;
 
   return { isCommand: false, action: null };
 }
 
 /** ======================= Socket.IO ======================= */
-io.on('connection', socket => {
+io.on("connection", (socket) => {
   console.log(`✅ Socket: ${socket.id}`);
 
-  socket.emit('connected', {
-    message:               'Conectado a ALMA',
-    sampleRate:            16000,
+  socket.emit("connected", {
+    message: "Conectado a ALMA",
+    sampleRate: 16000,
     supportsTranscription: isVoskReady,
-    tts:                   { enabled: true, engine: 'XTTS-v2' }
+    tts: { enabled: true, engine: "XTTS-v2" },
   });
 
-  socket.on('identify', ({ patientId }) => {
-    if (!patientId) { socket.emit('identify_error', { error: 'Código requerido.' }); return; }
+  socket.on("identify", ({ patientId }) => {
+    if (!patientId) {
+      socket.emit("identify_error", { error: "Código requerido." });
+      return;
+    }
     const patient = patientOps.getById(patientId);
-    if (!patient)  { socket.emit('identify_error', { error: `Paciente "${patientId}" no encontrado.` }); return; }
+    if (!patient) {
+      socket.emit("identify_error", {
+        error: `Paciente "${patientId}" no encontrado.`,
+      });
+      return;
+    }
 
-    const dbSession    = sessionOps.getLatestForPatient(patientId);
+    const dbSession = sessionOps.getLatestForPatient(patientId);
     const isNewSession = !dbSession || dbSession.ended_at !== null;
     let sessionId;
 
-    if (isNewSession) { sessionId = sessionOps.create(patientId, socket.id); }
-    else              { sessionId = dbSession.id; sessionOps.updateSocket(sessionId, socket.id); }
+    if (isNewSession) {
+      sessionId = sessionOps.create(patientId, socket.id);
+    } else {
+      sessionId = dbSession.id;
+      sessionOps.updateSocket(sessionId, socket.id);
+    }
 
     const systemPrompt = buildSystemPrompt(patient);
-    const { dialog }   = buildDialog(systemPrompt, sessionOps.getById(sessionId));
+    const { dialog } = buildDialog(systemPrompt, sessionOps.getById(sessionId));
 
     const ctx = new SessionContext(socket, patient, sessionId, dialog);
     ctx.createVoskRec();
     activeSessions.set(socket.id, ctx);
 
-    socket.emit('identified', {
+    socket.emit("identified", {
       patientId,
-      patientName:  patient.name,
+      patientName: patient.name,
       sessionId,
       isNewSession,
-      messageCount: messageOps.countForSession(sessionId)
+      messageCount: messageOps.countForSession(sessionId),
     });
     console.log(`👤 ${patient.name} (${patientId}) — sesión ${sessionId}`);
   });
 
-  socket.on('audio_chunk', data => {
+  socket.on("audio_chunk", (data) => {
     const ctx = activeSessions.get(socket.id);
     if (!ctx) return;
     if (!ctx.firstChunkTime) ctx.firstChunkTime = Date.now();
@@ -503,16 +653,22 @@ io.on('connection', socket => {
     const int16 = new Int16Array(data.chunk);
     const audioBuf = Buffer.from(int16.buffer);
     ctx.writeAudioChunk(audioBuf);
-    ctx.processVAD(int16);   // VAD solo activo cuando runner lo habilita
+    ctx.processVAD(int16); // VAD solo activo cuando runner lo habilita
     if (!isVoskReady || !ctx.voskRec) return;
 
     const _t0stt = Date.now();
     if (ctx.voskRec.acceptWaveform(audioBuf)) {
-      const r   = ctx.voskRec.result();
-      const txt = (r.text || '').trim();
+      const r = ctx.voskRec.result();
+      const txt = (r.text || "").trim();
       if (!txt) return;
-      console.log(`⏱️  [STT ] "${txt.slice(0, 40)}" → ${Date.now() - _t0stt}ms`);
-      socket.emit('transcription', { text: txt, isFinal: true, confidence: r.confidence || 0 });
+      console.log(
+        `⏱️  [STT ] "${txt.slice(0, 40)}" → ${Date.now() - _t0stt}ms`,
+      );
+      socket.emit("transcription", {
+        text: txt,
+        isFinal: true,
+        confidence: r.confidence || 0,
+      });
 
       // ── Si hay un test activo, redirigir al runner ──
       if (ctx.activeRunner) {
@@ -520,45 +676,98 @@ io.on('connection', socket => {
         return; // no procesar como conversación normal
       }
 
+      // ── Bloquear si estamos en cooldown post-despedida ──
+      if (ctx._byeCooldown) {
+        console.log(
+          `🔇 [Conv] STT bloqueado (bye cooldown): "${txt.slice(0, 30)}"`,
+        );
+        return;
+      }
+
       // ── Flujo normal de conversación ──
       const cmd = processVoiceCommands(txt, ctx);
       if (cmd.isCommand) {
-        socket.emit('voice_command_detected', { action: cmd.action, text: txt });
-        if (cmd.action === 'stop_conversation' && cmd.farewell) {
-          const byeMsg = 'El paciente se despidió. Responde SOLO con una frase corta de despedida. Nada más.';
-          ctx.dialog.push({ role: 'system', content: byeMsg });
-          setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error), 300);
+        socket.emit("voice_command_detected", {
+          action: cmd.action,
+          text: txt,
+        });
+        if (cmd.action === "stop_conversation" && cmd.farewell) {
+          ctx._byeCooldown = true;
+          // Despedida hardcoded — no pasar por LLM para evitar respuestas incorrectas
+          const byeText = "¡Hasta pronto! Que tenga un buen día.";
+          socket.emit("assistant_text", { delta: byeText });
+          socket.emit("assistant_text_done", { text: byeText });
+          synthesizeSpeech(byeText)
+            .then((buf) => {
+              if (buf)
+                socket.emit("tts_audio", {
+                  audio: buf.toString("base64"),
+                  mimeType: "audio/wav",
+                });
+            })
+            .catch(console.error);
+          // Limpiar cooldown después de 4s
+          setTimeout(() => {
+            if (ctx) ctx._byeCooldown = false;
+          }, 4000);
         }
-        if (cmd.action === 'start_conversation') {
+        if (cmd.action === "start_conversation") {
           if (cmd.question) {
-            setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error), 300);
+            setTimeout(
+              () =>
+                askLLM(
+                  socket,
+                  ctx.dialog,
+                  ctx.sessionId,
+                  ctx.patient,
+                  ctx,
+                ).catch(console.error),
+              300,
+            );
           } else {
             // Sin pregunta adicional → inyectar saludo para que ALMA responda
-            const greetMsg = 'El paciente te saludó. Responde SOLO con un saludo breve (máximo una oración). No hagas preguntas, no ofrezcas ayuda, no agregues nada más.';
-            ctx.dialog.push({ role: 'system', content: greetMsg });
-            setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error), 300);
+            const greetMsg =
+              "El paciente te saludó. Responde SOLO con un saludo breve (máximo una oración). No hagas preguntas, no ofrezcas ayuda, no agregues nada más.";
+            ctx.dialog.push({ role: "system", content: greetMsg });
+            setTimeout(
+              () =>
+                askLLM(
+                  socket,
+                  ctx.dialog,
+                  ctx.sessionId,
+                  ctx.patient,
+                  ctx,
+                ).catch(console.error),
+              300,
+            );
           }
         }
       } else if (ctx.conversationActive && txt.trim()) {
-        ctx.dialog.push({ role: 'user', content: txt });
-        messageOps.add(ctx.sessionId, 'user', txt);
-        setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error), 300);
+        ctx.dialog.push({ role: "user", content: txt });
+        messageOps.add(ctx.sessionId, "user", txt);
+        setTimeout(
+          () =>
+            askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(
+              console.error,
+            ),
+          300,
+        );
       }
     } else {
-      const partial = (ctx.voskRec.partialResult().partial || '').trim();
+      const partial = (ctx.voskRec.partialResult().partial || "").trim();
       if (partial && partial !== ctx.lastPartial) {
         ctx.lastPartial = partial;
-        socket.emit('transcription', { text: partial, isFinal: false });
+        socket.emit("transcription", { text: partial, isFinal: false });
       }
     }
   });
 
-  socket.on('get_final_transcription', () => {
+  socket.on("get_final_transcription", () => {
     const ctx = activeSessions.get(socket.id);
     if (!ctx?.voskRec) return;
-    const txt = (ctx.voskRec.finalResult().text || '').trim();
+    const txt = (ctx.voskRec.finalResult().text || "").trim();
     if (!txt) return;
-    socket.emit('transcription', { text: txt, isFinal: true });
+    socket.emit("transcription", { text: txt, isFinal: true });
 
     // Si hay un test activo, redirigir
     if (ctx.activeRunner) {
@@ -567,24 +776,33 @@ io.on('connection', socket => {
     }
 
     if (ctx.conversationActive) {
-      ctx.dialog.push({ role: 'user', content: txt });
-      messageOps.add(ctx.sessionId, 'user', txt);
-      setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error), 300);
+      ctx.dialog.push({ role: "user", content: txt });
+      messageOps.add(ctx.sessionId, "user", txt);
+      setTimeout(
+        () =>
+          askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(
+            console.error,
+          ),
+        300,
+      );
     } else {
-      ctx.userBuffer += (ctx.userBuffer ? ' ' : '') + txt;
+      ctx.userBuffer += (ctx.userBuffer ? " " : "") + txt;
     }
   });
 
-  socket.on('start_recording', () => {
+  socket.on("start_recording", () => {
     const ctx = activeSessions.get(socket.id);
-    if (!ctx) { socket.emit('audio_error', { error: 'Identifícate primero.' }); return; }
+    if (!ctx) {
+      socket.emit("audio_error", { error: "Identifícate primero." });
+      return;
+    }
     ctx.isRecording = true;
     ctx.startWavWriter();
-    socket.emit('assistant_status', { status: 'idle' });
+    socket.emit("assistant_status", { status: "idle" });
     console.log(`🎙️  Recording start: ${ctx.patient.name}`);
   });
 
-  socket.on('stop_recording', async () => {
+  socket.on("stop_recording", async () => {
     const ctx = activeSessions.get(socket.id);
     if (!ctx) return;
     ctx.isRecording = false;
@@ -592,15 +810,26 @@ io.on('connection', socket => {
     try {
       fs.writeFileSync(
         path.join(audioDir, `transcript_${socket.id}_${Date.now()}.json`),
-        JSON.stringify({ patientId: ctx.patient.id, sessionId: ctx.sessionId, endedAt: Date.now(), dialog: ctx.dialog }, null, 2)
+        JSON.stringify(
+          {
+            patientId: ctx.patient.id,
+            sessionId: ctx.sessionId,
+            endedAt: Date.now(),
+            dialog: ctx.dialog,
+          },
+          null,
+          2,
+        ),
       );
     } catch {}
     const question = ctx.userBuffer.trim();
     if (question && !ctx.conversationActive && !ctx.activeRunner) {
-      ctx.dialog.push({ role: 'user', content: question });
-      messageOps.add(ctx.sessionId, 'user', question);
-      ctx.userBuffer = '';
-      await askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error);
+      ctx.dialog.push({ role: "user", content: question });
+      messageOps.add(ctx.sessionId, "user", question);
+      ctx.userBuffer = "";
+      await askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(
+        console.error,
+      );
     }
     sessionOps.end(ctx.sessionId);
     console.log(`⏹️  Recording stop: ${ctx.patient.name}`);
@@ -609,19 +838,19 @@ io.on('connection', socket => {
   const statsInterval = setInterval(() => {
     const ctx = activeSessions.get(socket.id);
     try {
-      socket.emit('server_stats', {
-        activeConnections:  activeSessions.size,
-        chunksReceived:     ctx?.chunksReceived   || 0,
-        duration:           ctx?.firstChunkTime   ? Date.now() - ctx.firstChunkTime : 0,
-        isRecording:        ctx?.isRecording      || false,
+      socket.emit("server_stats", {
+        activeConnections: activeSessions.size,
+        chunksReceived: ctx?.chunksReceived || 0,
+        duration: ctx?.firstChunkTime ? Date.now() - ctx.firstChunkTime : 0,
+        isRecording: ctx?.isRecording || false,
         conversationActive: ctx?.conversationActive || false,
-        testActive:         !!(ctx?.activeRunner),
-        patientName:        ctx?.patient?.name    || null
+        testActive: !!ctx?.activeRunner,
+        patientName: ctx?.patient?.name || null,
       });
     } catch {}
   }, 2000);
 
-  socket.on('disconnect', reason => {
+  socket.on("disconnect", (reason) => {
     clearInterval(statsInterval);
     const ctx = activeSessions.get(socket.id);
     if (ctx) {
@@ -634,94 +863,159 @@ io.on('connection', socket => {
     console.log(`🔴 ${socket.id} (${reason})`);
   });
 
-  socket.on('error', e => console.error(`💥 Socket ${socket.id}:`, e.message));
+  socket.on("error", (e) =>
+    console.error(`💥 Socket ${socket.id}:`, e.message),
+  );
 });
 
 /** ======================= REST ======================= */
-app.post('/patients', (req, res) => {
+app.post("/patients", (req, res) => {
   try {
     const { id, name, age, clinical_notes } = req.body;
-    if (!id || !name) return res.status(400).json({ error: 'id y name son requeridos.' });
-    if (patientOps.getById(id)) return res.status(409).json({ error: 'Paciente ya existe.' });
+    if (!id || !name)
+      return res.status(400).json({ error: "id y name son requeridos." });
+    if (patientOps.getById(id))
+      return res.status(409).json({ error: "Paciente ya existe." });
     patientOps.create(id, name, age, clinical_notes);
     res.status(201).json({ ok: true, id });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-app.get('/patients',     (_req, res) => { try { res.json(patientOps.getAll()); } catch (e) { res.status(500).json({ error: e.message }); } });
-app.get('/patients/:id', (req,  res) => {
+app.get("/patients", (_req, res) => {
+  try {
+    res.json(patientOps.getAll());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.get("/patients/:id", (req, res) => {
   try {
     const p = patientOps.getById(req.params.id);
-    if (!p) return res.status(404).json({ error: 'No encontrado.' });
+    if (!p) return res.status(404).json({ error: "No encontrado." });
     res.json({ ...p, sessions: sessionOps.getAllForPatient(p.id) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
-app.put('/patients/:id', (req, res) => {
+app.put("/patients/:id", (req, res) => {
   try {
     patientOps.update(req.params.id, req.body);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
-app.delete('/patients/:id', (req, res) => {
-  try { patientOps.delete(req.params.id); res.json({ ok: true }); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+app.delete("/patients/:id", (req, res) => {
+  try {
+    patientOps.delete(req.params.id);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-app.get('/patients/:id/sessions',  (req, res) => { try { res.json(sessionOps.getAllForPatient(req.params.id)); }   catch (e) { res.status(500).json({ error: e.message }); } });
-app.get('/patients/:id/evals',     (req, res) => { try { res.json(evaluationOps.getForPatient(req.params.id)); }    catch (e) { res.status(500).json({ error: e.message }); } });
-app.get('/sessions/:id/messages',  (req, res) => { try { res.json(messageOps.getForSession(req.params.id)); }       catch (e) { res.status(500).json({ error: e.message }); } });
-app.get('/evals/:id',              (req, res) => { try { res.json(evaluationOps.getById(req.params.id)); }           catch (e) { res.status(500).json({ error: e.message }); } });
+app.get("/patients/:id/sessions", (req, res) => {
+  try {
+    res.json(sessionOps.getAllForPatient(req.params.id));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.get("/patients/:id/evals", (req, res) => {
+  try {
+    res.json(evaluationOps.getForPatient(req.params.id));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.get("/sessions/:id/messages", (req, res) => {
+  try {
+    res.json(messageOps.getForSession(req.params.id));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.get("/evals/:id", (req, res) => {
+  try {
+    res.json(evaluationOps.getById(req.params.id));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
-app.get('/stats', (_req, res) => res.json({
-  activeSockets:      activeSessions.size,
-  voskReady:          isVoskReady,
-  saveAudio:          SAVE_AUDIO,
-  llmModel:           LLM_MODEL,
-  ttsUrl:             TTS_URL,
-  uptime:             process.uptime(),
-  defaultPatientId:   DEFAULT_PATIENT_ID,
-  defaultPatientName: DEFAULT_PATIENT_NAME
-}));
-app.get('/test', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+app.get("/stats", (_req, res) =>
+  res.json({
+    activeSockets: activeSessions.size,
+    voskReady: isVoskReady,
+    saveAudio: SAVE_AUDIO,
+    llmModel: LLM_MODEL,
+    ttsUrl: TTS_URL,
+    uptime: process.uptime(),
+    defaultPatientId: DEFAULT_PATIENT_ID,
+    defaultPatientName: DEFAULT_PATIENT_NAME,
+  }),
+);
+app.get("/test", (_req, res) =>
+  res.json({ status: "ok", timestamp: new Date().toISOString() }),
+);
 
 /** ======================= Debug (solo desarrollo) ======================= */
 // DELETE /debug/evals/:patientId/today  → borra evaluaciones de hoy
-app.delete('/debug/evals/:patientId/today', (req, res) => {
+app.delete("/debug/evals/:patientId/today", (req, res) => {
   try {
     evaluationOps.deleteForPatientToday(req.params.patientId);
-    res.json({ ok: true, message: `Evaluaciones de hoy borradas para ${req.params.patientId}` });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    res.json({
+      ok: true,
+      message: `Evaluaciones de hoy borradas para ${req.params.patientId}`,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // DELETE /debug/evals/:patientId/all  → borra TODAS las evaluaciones del paciente
-app.delete('/debug/evals/:patientId/all', (req, res) => {
+app.delete("/debug/evals/:patientId/all", (req, res) => {
   try {
     evaluationOps.deleteAllForPatient(req.params.patientId);
-    res.json({ ok: true, message: `Todas las evaluaciones borradas para ${req.params.patientId}` });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    res.json({
+      ok: true,
+      message: `Todas las evaluaciones borradas para ${req.params.patientId}`,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // DELETE /debug/evals/id/:evalId  → borra una evaluación específica por id
-app.delete('/debug/evals/id/:evalId', (req, res) => {
+app.delete("/debug/evals/id/:evalId", (req, res) => {
   try {
     evaluationOps.deleteById(req.params.evalId);
     res.json({ ok: true, message: `Evaluación ${req.params.evalId} borrada` });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // GET /debug/evals/:patientId  → lista todas las evaluaciones (cualquier estado)
-app.get('/debug/evals/:patientId', (req, res) => {
+app.get("/debug/evals/:patientId", (req, res) => {
   try {
     const rows = evaluationOps.getForPatient(req.params.patientId, 50);
-    res.json({ count: rows.length, evals: rows.map(e => ({
-      id:         e.id,
-      test_id:    e.test_id,
-      status:     e.status,
-      total_score: e.total_score,
-      max_score:  e.max_score,
-      started_at: new Date(e.started_at).toISOString()
-    }))});
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    res.json({
+      count: rows.length,
+      evals: rows.map((e) => ({
+        id: e.id,
+        test_id: e.test_id,
+        status: e.status,
+        total_score: e.total_score,
+        max_score: e.max_score,
+        started_at: new Date(e.started_at).toISOString(),
+      })),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 /** ======================= Arranque ======================= */
@@ -730,18 +1024,28 @@ app.get('/debug/evals/:patientId', (req, res) => {
 
   // Seed: asegurar que el paciente por defecto existe
   if (!patientOps.getById(DEFAULT_PATIENT_ID)) {
-    patientOps.create(DEFAULT_PATIENT_ID, DEFAULT_PATIENT_NAME, DEFAULT_PATIENT_AGE,
-      'Paciente de prueba generado automáticamente para desarrollo.');
-    console.log(`🌱 Paciente por defecto creado: ${DEFAULT_PATIENT_ID} (${DEFAULT_PATIENT_NAME})`);
+    patientOps.create(
+      DEFAULT_PATIENT_ID,
+      DEFAULT_PATIENT_NAME,
+      DEFAULT_PATIENT_AGE,
+      "Paciente de prueba generado automáticamente para desarrollo.",
+    );
+    console.log(
+      `🌱 Paciente por defecto creado: ${DEFAULT_PATIENT_ID} (${DEFAULT_PATIENT_NAME})`,
+    );
   } else {
-    console.log(`✅ Paciente por defecto: ${DEFAULT_PATIENT_ID} (${DEFAULT_PATIENT_NAME})`);
+    console.log(
+      `✅ Paciente por defecto: ${DEFAULT_PATIENT_ID} (${DEFAULT_PATIENT_NAME})`,
+    );
   }
 
   const voskOk = await initVosk();
-  console.log(voskOk ? '🎤 Vosk listo' : '⚠️  Vosk no disponible');
-  server.listen(PORT, '0.0.0.0', () => {
+  console.log(voskOk ? "🎤 Vosk listo" : "⚠️  Vosk no disponible");
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`\n🚀 ALMA en http://localhost:${PORT}`);
-    console.log(`   SAVE_AUDIO: ${SAVE_AUDIO} | LLM: ${LLM_MODEL} | TTS: ${TTS_URL}`);
+    console.log(
+      `   SAVE_AUDIO: ${SAVE_AUDIO} | LLM: ${LLM_MODEL} | TTS: ${TTS_URL}`,
+    );
     console.log(`   Paciente default: ${DEFAULT_PATIENT_ID}\n`);
   });
 })();
