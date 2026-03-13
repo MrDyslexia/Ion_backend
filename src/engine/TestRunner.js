@@ -17,9 +17,10 @@
  * FILLERS ("emm", "pues", repetir la pregunta):
  *    → Ignorados silenciosamente. El runner sigue esperando sin ningún feedback.
  *
- * POST-TEST:
- *    → El runner mismo dice una frase de cierre neutral.
- *      No involucra al LLM para el cierre inmediato.
+ * SOLICITUD DE REPETICIÓN:
+ *    → Detectada síncronamente en resolveSTT con keywords.
+ *      El runner repite la pregunta y vuelve a esperar (sin consumir intentos).
+ *      Puede ocurrir ilimitadas veces mientras el paciente lo solicite.
  *
  * Estados:
  *   IDLE             → sin operación activa
@@ -43,11 +44,10 @@ const TIMEOUT_RETRY        = 18000;  // retry tras no_response
 const TIMEOUT_CONFIRM      =  8000;  // confirmación cancelación
 
 // ── Patrones de filler ────────────────────────────────────────────────────────
-// Texto que indica pensamiento en voz alta o repetición de la pregunta → ignorar
 const FILLER_RE = [
   /^(e+m+|a+h+|u+h+|hm+|mm+|eh+|ah+|uh+|oh+)\s*$/i,
   /^(pues|bueno|a ver|veamos|espera|dejame|déjame|vamos|vamos a ver|es que|o sea)\s*[,.]?\s*$/i,
-  /^(sí|si|no|okay|ok|vale|claro|listo)\s*$/i,  // respuestas monosilábicas ambiguas en modo largo
+  /^(sí|si|no|okay|ok|vale|claro|listo)\s*$/i,
 ];
 
 // Si el texto del paciente reproduce más del 55% de palabras de la pregunta → eco
@@ -64,9 +64,26 @@ function isQuestionEcho(text, questionText) {
 function isFiller(text, mode) {
   const t = (text || '').trim();
   if (FILLER_RE.some(p => p.test(t))) return true;
-  // En modo largo, fragmentos muy cortos también son fillers
   if (mode === 'vad' && t.split(/\s+/).length <= 2 && t.length < 12) return true;
   return false;
+}
+
+// ── Detección síncrona de solicitud de repetición ────────────────────────────
+// Se detecta en resolveSTT (síncrono) para interceptar ANTES de cualquier validación.
+const REPEAT_KEYWORDS_SYNC = [
+  'repetir','repita','repite','de nuevo','otra vez',
+  'no entendi','no escuche','no oi','no le oi','no lo oi',
+  'puede repetir','puede repetirlo','digalo de nuevo',
+  'no entendiste','que dijo','como dice','perdon','mande',
+  'no escuche bien','mas despacio','mas lento',
+  'vuelva a','vuelve a','no le entendi','no lo entendi',
+  'no le oiste','no oiste','repitelo','repite la'
+];
+
+function isRepeatSync(text) {
+  const t = (text || '').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return REPEAT_KEYWORDS_SYNC.some(k => t.includes(k));
 }
 
 class CancelledError extends Error {
@@ -80,22 +97,23 @@ class TestRunner {
     this.state    = STATE.IDLE;
 
     // Para modo single
-    this._resolve = null;
-    this._timeout = null;
+    this._resolve           = null;
+    this._timeout           = null;
+    this._pendingRepeatResolve = null; // usado por el loop waitWithRepeat
+    this._confirmQueue      = null;    // respuesta recibida mientras TTS de confirmación
 
     // Para modo VAD
     this._vadResolve     = null;
-    this._vadTimeout     = null;   // timeout máximo sin STT
-    this._vadAccumulated = [];     // fragmentos STT acumulados durante habla
+    this._vadTimeout     = null;
+    this._vadAccumulated = [];
     this._collectMode     = 'single';
     this._currentQuestion = '';
-    this._allAccumulated  = [];  // acumula STT entre el primer intento y el retry (modo VAD)
+    this._allAccumulated  = [];
   }
 
   // ── TTS ──────────────────────────────────────────────────────────────────────
 
   async say(text) {
-    // Desactivar VAD mientras el runner habla para no capturar el audio propio
     this.ctx.vadEnabled = false;
 
     console.log(`🔊 [Runner] "${text.slice(0, 70)}"`);
@@ -109,17 +127,16 @@ class TestRunner {
         mimeType: 'audio/wav'
       });
       const durationMs = Math.max(1000, (audioBuf.length / 32000) * 1000);
-      await sleep(durationMs + 600);  // margen extra para que el audio termine en cliente
+      await sleep(durationMs + 600);
     } else {
       await sleep(1500);
     }
   }
 
-  // ── Callbacks VAD (llamados desde SessionContext.processVAD) ─────────────────
+  // ── Callbacks VAD ─────────────────────────────────────────────────────────────
 
   onVadSpeech() {
     if (this.state !== STATE.WAITING_RESPONSE || this._collectMode !== 'vad') return;
-    // Habla detectada → resetear timeout máximo (el paciente está respondiendo)
     clearTimeout(this._vadTimeout);
     this._vadTimeout = setTimeout(() => this._vadTimeoutFired(), TIMEOUT_FIRST_LONG);
   }
@@ -128,7 +145,6 @@ class TestRunner {
     if (this.state !== STATE.WAITING_RESPONSE || this._collectMode !== 'vad') return;
     if (!this._vadResolve) return;
 
-    // Silencio detectado → entregar lo acumulado
     const text = this._vadAccumulated.join(' ').trim();
     console.log(`🔇 [VAD] Silencio detectado. Acumulado: "${text.slice(0, 60)}"`);
 
@@ -161,12 +177,19 @@ class TestRunner {
     if (!t) return;
 
     // ── Modo confirmación ─────────────────────────────────────────────────────
-    if (this.state === STATE.WAITING_CONFIRM && this._resolve) {
-      clearTimeout(this._timeout);
-      const resolve = this._resolve;
-      this._resolve = null;
-      this.state = STATE.IDLE;
-      resolve({ text: t, timedOut: false });
+    if (this.state === STATE.WAITING_CONFIRM) {
+      if (this._resolve) {
+        // Promesa ya lista: resolver directamente
+        clearTimeout(this._timeout);
+        const resolve = this._resolve;
+        this._resolve = null;
+        this.state = STATE.IDLE;
+        resolve({ text: t, timedOut: false });
+      } else {
+        // TTS todavía reproduciéndose: encolar para cuando la promesa esté lista
+        console.log(`📬 [Runner] Confirmación encolada (TTS en curso): "${t.slice(0, 20)}"`);
+        this._confirmQueue = t;
+      }
       return;
     }
 
@@ -184,6 +207,19 @@ class TestRunner {
         return;
       }
 
+      // Repetición en modo VAD: cerrar el VAD y señalizar repeat
+      if (isRepeatSync(t)) {
+        console.log(`🔄 [Runner] Repetición solicitada (VAD): "${t.slice(0, 40)}"`);
+        clearTimeout(this._vadTimeout);
+        this.ctx.vadEnabled  = false;
+        const resolve        = this._vadResolve;
+        this._vadResolve     = null;
+        this._vadAccumulated = [];
+        this.state           = STATE.IDLE;
+        resolve({ text: null, timedOut: false, repeatRequest: true });
+        return;
+      }
+
       this._vadAccumulated.push(t);
       console.log(`📥 [Runner] Acumulado (${this._vadAccumulated.length}): "${t.slice(0, 40)}"`);
       return;
@@ -194,6 +230,17 @@ class TestRunner {
 
     if (isFiller(t, 'single') || isQuestionEcho(t, this._currentQuestion)) {
       console.log(`💭 [Runner] Ignorado (filler/eco): "${t.slice(0, 40)}"`);
+      return;
+    }
+
+    // Repetición en modo single: cancelar timer y señalizar repeat
+    if (isRepeatSync(t)) {
+      console.log(`🔄 [Runner] Repetición solicitada: "${t.slice(0, 40)}"`);
+      clearTimeout(this._timeout);
+      const resolve  = this._resolve;
+      this._resolve  = null;
+      this.state     = STATE.IDLE;
+      resolve({ text: null, timedOut: false, repeatRequest: true });
       return;
     }
 
@@ -230,48 +277,48 @@ class TestRunner {
     });
   }
 
+  // ── Espera con soporte de repetición ilimitada ───────────────────────────────
+  // Cada vez que el paciente solicita repetición, dice la pregunta de nuevo
+  // y vuelve a esperar. No consume intentos de timeout/retry.
+
+  async _waitWithRepeat(questionText, mode, silenceMs, timeoutMs) {
+    while (true) {
+      this._collectMode = mode;
+      this.state = STATE.WAITING_RESPONSE;
+
+      const result = mode === 'vad'
+        ? await this._waitVAD(silenceMs)
+        : await this._waitSingle(timeoutMs);
+
+      if (result.repeatRequest) {
+        await this.say(questionText);
+        continue; // volver a esperar sin contar como intento
+      }
+
+      return result;
+    }
+  }
+
   // ── API pública ───────────────────────────────────────────────────────────────
 
-  /**
-   * Espera la respuesta del paciente con lógica completa.
-   *
-   * Preguntas largas usan VAD. Preguntas cortas usan timer.
-   * Los fillers y ecos se ignoran silenciosamente.
-   *
-   * Retorna:
-   *   { status: 'answered',    text: string }
-   *   { status: 'unclear',     text: null   }
-   *   { status: 'no_response', text: null   }
-   * O lanza CancelledError.
-   */
   async waitForResponse(questionText, questionId) {
     this._currentQuestion = questionText;
 
     const longQuestions = ['countdown', 'months_reverse'];
     const mode = longQuestions.includes(questionId) ? 'vad' : 'single';
-    this._collectMode = mode;
-    this.state = STATE.WAITING_RESPONSE;
-
-    // Silencio más generoso para meses (el paciente puede pausar entre meses)
     const silenceMs = questionId === 'months_reverse' ? 2800 : 1800;
     this._allAccumulated = [];
 
     // ── Intento 1 ─────────────────────────────────────────────────────────────
-    const first = mode === 'vad'
-      ? await this._waitVAD(silenceMs)
-      : await this._waitSingle(TIMEOUT_FIRST_SHORT);
+    const first = await this._waitWithRepeat(questionText, mode, silenceMs, TIMEOUT_FIRST_SHORT);
 
     if (mode === 'vad' && first.text) this._allAccumulated.push(first.text);
 
     if (first.timedOut || !first.text) {
       // Sin respuesta → repetir pregunta una vez
       await this.say(questionText);
-      this._collectMode = mode;
-      this.state = STATE.WAITING_RESPONSE;
 
-      const second = mode === 'vad'
-        ? await this._waitVAD(silenceMs)
-        : await this._waitSingle(TIMEOUT_RETRY);
+      const second = await this._waitWithRepeat(questionText, mode, silenceMs, TIMEOUT_RETRY);
 
       if (second.timedOut || !second.text) return { status: 'no_response', text: null };
       if (await isCancelIntent(second.text)) await this._handleCancelConfirm(questionText);
@@ -287,9 +334,7 @@ class TestRunner {
     const validity = await isValidResponse(questionText, first.text);
 
     if (validity === 'noise') {
-      // En modo VAD para preguntas largas: el paciente pudo haber continuado
-      // hablando después del primer silencio. Hacer retry SIN decir nada
-      // (solo esperar otro fragmento), combinando con lo ya capturado.
+      // En modo VAD: el paciente pudo haber continuado hablando después del primer silencio.
       if (mode === 'vad') {
         this._collectMode = mode;
         this.state = STATE.WAITING_RESPONSE;
@@ -302,12 +347,8 @@ class TestRunner {
         }
       }
       await this.say('Disculpe, no le entendí bien. ¿Puede repetir su respuesta?');
-      this._collectMode = mode;
-      this.state = STATE.WAITING_RESPONSE;
 
-      const retry = mode === 'vad'
-        ? await this._waitVAD(silenceMs)
-        : await this._waitSingle(TIMEOUT_RETRY);
+      const retry = await this._waitWithRepeat(questionText, mode, silenceMs, TIMEOUT_RETRY);
 
       if (retry.timedOut || !retry.text) return { status: 'unclear', text: null };
       if (await isCancelIntent(retry.text)) await this._handleCancelConfirm(questionText);
@@ -325,10 +366,21 @@ class TestRunner {
   // ── Cancelación ───────────────────────────────────────────────────────────────
 
   async _handleCancelConfirm(questionText) {
+    // Marcar estado ANTES del TTS para que resolveSTT pueda encolar la respuesta
     this.state = STATE.WAITING_CONFIRM;
+    this._confirmQueue = null;
     await this.say('¿Desea detener la evaluación? Diga "sí" para confirmar o "no" para continuar.');
 
     const confirm = await new Promise(resolve => {
+      // Si el paciente respondió mientras el TTS estaba reproduciéndose, usar esa respuesta
+      if (this._confirmQueue) {
+        const queued = this._confirmQueue;
+        this._confirmQueue = null;
+        this.state = STATE.IDLE;
+        console.log(`📬 [Runner] Usando confirmación encolada: "${queued.slice(0, 20)}"`);
+        resolve({ text: queued, timedOut: false });
+        return;
+      }
       this._resolve = resolve;
       this._timeout = setTimeout(() => {
         this._resolve = null;
@@ -364,6 +416,7 @@ class TestRunner {
     if (this._resolve)    { this._resolve({ text: null, timedOut: true });    this._resolve = null; }
     if (this._vadResolve) { this._vadResolve({ text: null, timedOut: true }); this._vadResolve = null; }
     this._vadAccumulated = [];
+    this._confirmQueue   = null;
     this.state = STATE.IDLE;
   }
 }
