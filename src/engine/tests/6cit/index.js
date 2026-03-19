@@ -56,7 +56,16 @@ class SixCITTest extends BaseTest {
           componentScores: componentScores || null
         };
 
-        console.log(`📊 [6CIT] ${question.id}: ${score}/${question.maxScore} (${detail})`);
+        // Log base
+        let logLine = `📊 [6CIT] ${question.id}: ${score}/${question.maxScore} (${detail})`;
+        // Si hay detalle por componente (address_recall), mostrarlo en la misma línea
+        if (scoreResult.componentScores) {
+          const parts = Object.entries(scoreResult.componentScores)
+            .map(([c, r]) => `${r === 'correcto' ? '✅' : '❌'} "${c}"`)
+            .join('  ');
+          logLine += `  →  ${parts}`;
+        }
+        console.log(logLine);
         await sleep(600);
       }
 
