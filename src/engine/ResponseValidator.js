@@ -8,6 +8,8 @@
 const LLM_BASE_URL = process.env.LLM_BASE_URL || 'http://localhost:11434';
 const LLM_MODEL    = process.env.LLM_MODEL    || 'qwen2.5:7b';
 
+const { ADDRESS } = require('./tests/6cit/questions');
+
 async function callLLM(systemPrompt, userContent) {
   const resp = await fetch(`${LLM_BASE_URL}/api/chat`, {
     method:  'POST',
@@ -34,9 +36,11 @@ async function callLLM(systemPrompt, userContent) {
  */
 function looksLikeAddress(text) {
   const t = (text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  // Palabras clave de la dirección objetivo
-  const addressKeywords = ['manuel','rodriguez','mil','trescientos','setenta','tres','13','1373','santiago'];
-  const matches = addressKeywords.filter(k => t.includes(k));
+  // Derivar keywords desde la definición oficial de la dirección
+  const keywords = ADDRESS.components.map(c =>
+    c.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+  );
+  const matches = keywords.filter(k => t.includes(k));
   return matches.length >= 2;  // al menos 2 componentes reconocibles
 }
 

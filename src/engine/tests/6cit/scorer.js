@@ -94,10 +94,11 @@ function scoreBinary(question, answer) {
   }
 
   if (question.id === 'month') {
-    const idx   = new Date().getMonth();
-    const name  = normalize(MONTHS_ES[idx]);
-    const num   = String(idx + 1);
-    correct = text.includes(name) || text.includes(num);
+    const idx      = new Date().getMonth();
+    const name     = normalize(MONTHS_ES[idx]);
+    const num      = String(idx + 1);
+    const numRegex = new RegExp(`\\b${num}\\b`);
+    correct = text.includes(name) || numRegex.test(text);
   }
 
   console.log(`📍 [Scorer] ${question.id} — texto: "${answer.text?.slice(0,40)}" → ${correct ? '✅ correcto' : '❌ incorrecto'}`);

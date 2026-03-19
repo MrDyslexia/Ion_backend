@@ -341,9 +341,7 @@ class TestRunner {
     if (validity === 'noise') {
       // En modo VAD: el paciente pudo haber continuado hablando después del primer silencio.
       if (mode === 'vad') {
-        this._collectMode = mode;
-        this.state = STATE.WAITING_RESPONSE;
-        const retry = await this._waitVAD(silenceMs);
+        const retry = await this._waitWithRepeat(questionText, mode, silenceMs, TIMEOUT_RETRY);
         if (retry.cancelled) throw new CancelledError();
         if (!retry.timedOut && retry.text) {
           this._allAccumulated.push(retry.text);

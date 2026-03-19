@@ -292,6 +292,11 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
       console.log(`🔧 Result: ${result}`);
       dialog.push({ role: 'assistant', content: '', tool_calls: [toolCall] });
       dialog.push({ role: 'tool',      content: result });
+      // Persistir en BD para que buildDialog() reconstruya el historial correctamente
+      if (sessionId) {
+        messageOps.add(sessionId, 'assistant', '', [toolCall]);
+        messageOps.add(sessionId, 'tool', result);
+      }
       continue;
     }
 
@@ -308,7 +313,8 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
   socket.emit('assistant_text_done', { text: fullResponse });
   socket.emit('assistant_status',    { status: 'idle' });
 
-  if (sessionId && messageOps.countForSession(sessionId) > COMPRESS_THRESHOLD) {
+  if (ctx && !ctx._compressed && sessionId && messageOps.countForSession(sessionId) > COMPRESS_THRESHOLD) {
+    ctx._compressed = true;
     compressContext(sessionId, dialog, patient).catch(console.error);
   }
 
@@ -341,7 +347,17 @@ async function compressContext(sessionId, dialog, patient) {
     });
     const d = await resp.json();
     const summary = d.message?.content?.trim();
-    if (summary) { sessionOps.saveSummary(sessionId, summary); console.log(`🗜️  Contexto comprimido: ${sessionId}`); }
+    if (summary) {
+      sessionOps.saveSummary(sessionId, summary);
+      // Truncar el dialog en memoria: conservar system + resumen + últimos 10 mensajes
+      const systemMsg = dialog[0];
+      const recent    = dialog.slice(-10);
+      dialog.length = 0;
+      dialog.push(systemMsg);
+      dialog.push({ role: 'system', content: `[Resumen de la conversación anterior]: ${summary}` });
+      dialog.push(...recent);
+      console.log(`🗜️  Contexto comprimido: ${sessionId} (dialog reducido a ${dialog.length} msgs)`);
+    }
   } catch (e) { console.error('❌ Compresión:', e.message); }
 }
 
@@ -366,6 +382,7 @@ class SessionContext {
     this._testJustStarted   = false;  // flag para suprimir TTS del LLM al iniciar test
     this.testDoneThisSession  = false; // flag para bloquear conduct_test post-test
     this._byeCooldown         = false; // bloquear STT extra tras despedida
+    this._compressed          = false; // flag para comprimir contexto solo una vez
     // VAD state (solo activo durante test)
     this.vadEnabled         = false;
     this.vadIsSpeaking      = false;
