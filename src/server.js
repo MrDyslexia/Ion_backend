@@ -16,7 +16,7 @@ const { getTest }                    = require('./engine/tests/registry');
 
 const app    = express();
 const server = http.createServer(app);
-const io     = socketIo(server, { cors: { origin: '*', methods: ['GET', 'POST'] } });
+const io     = socketIo(server, { cors: { origin: process.env.ALLOWED_ORIGIN || 'http://localhost:3000', methods: ['GET', 'POST'] } });
 
 app.use(express.json());
 app.use(express.static('public'));
@@ -718,44 +718,48 @@ app.get('/stats', (_req, res) => res.json({
 app.get('/test', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 /** ======================= Debug (solo desarrollo) ======================= */
-// DELETE /debug/evals/:patientId/today  → borra evaluaciones de hoy
-app.delete('/debug/evals/:patientId/today', (req, res) => {
-  try {
-    evaluationOps.deleteForPatientToday(req.params.patientId);
-    res.json({ ok: true, message: `Evaluaciones de hoy borradas para ${req.params.patientId}` });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+if (process.env.NODE_ENV !== 'production') {
+  // DELETE /debug/evals/:patientId/today  → borra evaluaciones de hoy
+  app.delete('/debug/evals/:patientId/today', (req, res) => {
+    try {
+      evaluationOps.deleteForPatientToday(req.params.patientId);
+      res.json({ ok: true, message: `Evaluaciones de hoy borradas para ${req.params.patientId}` });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
 
-// DELETE /debug/evals/:patientId/all  → borra TODAS las evaluaciones del paciente
-app.delete('/debug/evals/:patientId/all', (req, res) => {
-  try {
-    evaluationOps.deleteAllForPatient(req.params.patientId);
-    res.json({ ok: true, message: `Todas las evaluaciones borradas para ${req.params.patientId}` });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+  // DELETE /debug/evals/:patientId/all  → borra TODAS las evaluaciones del paciente
+  app.delete('/debug/evals/:patientId/all', (req, res) => {
+    try {
+      evaluationOps.deleteAllForPatient(req.params.patientId);
+      res.json({ ok: true, message: `Todas las evaluaciones borradas para ${req.params.patientId}` });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
 
-// DELETE /debug/evals/id/:evalId  → borra una evaluación específica por id
-app.delete('/debug/evals/id/:evalId', (req, res) => {
-  try {
-    evaluationOps.deleteById(req.params.evalId);
-    res.json({ ok: true, message: `Evaluación ${req.params.evalId} borrada` });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+  // DELETE /debug/evals/id/:evalId  → borra una evaluación específica por id
+  app.delete('/debug/evals/id/:evalId', (req, res) => {
+    try {
+      evaluationOps.deleteById(req.params.evalId);
+      res.json({ ok: true, message: `Evaluación ${req.params.evalId} borrada` });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
 
-// GET /debug/evals/:patientId  → lista todas las evaluaciones (cualquier estado)
-app.get('/debug/evals/:patientId', (req, res) => {
-  try {
-    const rows = evaluationOps.getForPatient(req.params.patientId, 50);
-    res.json({ count: rows.length, evals: rows.map(e => ({
-      id:         e.id,
-      test_id:    e.test_id,
-      status:     e.status,
-      total_score: e.total_score,
-      max_score:  e.max_score,
-      started_at: new Date(e.started_at).toISOString()
-    }))});
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+  // GET /debug/evals/:patientId  → lista todas las evaluaciones (cualquier estado)
+  app.get('/debug/evals/:patientId', (req, res) => {
+    try {
+      const rows = evaluationOps.getForPatient(req.params.patientId, 50);
+      res.json({ count: rows.length, evals: rows.map(e => ({
+        id:          e.id,
+        test_id:     e.test_id,
+        status:      e.status,
+        total_score: e.total_score,
+        max_score:   e.max_score,
+        started_at:  new Date(e.started_at).toISOString()
+      }))});
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+} else {
+  app.use('/debug', (_req, res) => res.status(404).json({ error: 'Not found' }));
+}
 
 /** ======================= Arranque ======================= */
 (async () => {

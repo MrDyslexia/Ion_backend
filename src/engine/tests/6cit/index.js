@@ -59,8 +59,8 @@ class SixCITTest extends BaseTest {
         // Log base
         let logLine = `📊 [6CIT] ${question.id}: ${score}/${question.maxScore} (${detail})`;
         // Si hay detalle por componente (address_recall), mostrarlo en la misma línea
-        if (scoreResult.componentScores) {
-          const parts = Object.entries(scoreResult.componentScores)
+        if (componentScores) {
+          const parts = Object.entries(componentScores)
             .map(([c, r]) => `${r === 'correcto' ? '✅' : '❌'} "${c}"`)
             .join('  ');
           logLine += `  →  ${parts}`;

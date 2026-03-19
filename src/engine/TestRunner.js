@@ -290,6 +290,8 @@ class TestRunner {
         ? await this._waitVAD(silenceMs)
         : await this._waitSingle(timeoutMs);
 
+      if (result.cancelled) return result;
+
       if (result.repeatRequest) {
         await this.say(questionText);
         continue; // volver a esperar sin contar como intento
@@ -312,6 +314,8 @@ class TestRunner {
     // ── Intento 1 ─────────────────────────────────────────────────────────────
     const first = await this._waitWithRepeat(questionText, mode, silenceMs, TIMEOUT_FIRST_SHORT);
 
+    if (first.cancelled) throw new CancelledError();
+
     if (mode === 'vad' && first.text) this._allAccumulated.push(first.text);
 
     if (first.timedOut || !first.text) {
@@ -320,6 +324,7 @@ class TestRunner {
 
       const second = await this._waitWithRepeat(questionText, mode, silenceMs, TIMEOUT_RETRY);
 
+      if (second.cancelled) throw new CancelledError();
       if (second.timedOut || !second.text) return { status: 'no_response', text: null };
       if (await isCancelIntent(second.text)) await this._handleCancelConfirm(questionText);
       const v = await isValidResponse(questionText, second.text);
@@ -339,6 +344,7 @@ class TestRunner {
         this._collectMode = mode;
         this.state = STATE.WAITING_RESPONSE;
         const retry = await this._waitVAD(silenceMs);
+        if (retry.cancelled) throw new CancelledError();
         if (!retry.timedOut && retry.text) {
           this._allAccumulated.push(retry.text);
           const combined = this._allAccumulated.join(' ');
@@ -350,6 +356,7 @@ class TestRunner {
 
       const retry = await this._waitWithRepeat(questionText, mode, silenceMs, TIMEOUT_RETRY);
 
+      if (retry.cancelled) throw new CancelledError();
       if (retry.timedOut || !retry.text) return { status: 'unclear', text: null };
       if (await isCancelIntent(retry.text)) await this._handleCancelConfirm(questionText);
       const v2 = await isValidResponse(questionText, retry.text);
@@ -413,8 +420,8 @@ class TestRunner {
     this.ctx.resetVAD();
     clearTimeout(this._timeout);
     clearTimeout(this._vadTimeout);
-    if (this._resolve)    { this._resolve({ text: null, timedOut: true });    this._resolve = null; }
-    if (this._vadResolve) { this._vadResolve({ text: null, timedOut: true }); this._vadResolve = null; }
+    if (this._resolve)    { this._resolve({ text: null, timedOut: false, cancelled: true });    this._resolve = null; }
+    if (this._vadResolve) { this._vadResolve({ text: null, timedOut: false, cancelled: true }); this._vadResolve = null; }
     this._vadAccumulated = [];
     this._confirmQueue   = null;
     this.state = STATE.IDLE;
