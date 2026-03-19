@@ -47,16 +47,24 @@ function wordsToNumber(text) {
   };
   const nums = text.split(/\s+/).map(w => WORD_NUM[w]).filter(n => n !== undefined);
   if (!nums.length) return null;
-  // "veinte veintiséis" → [20,26] → concat como string → "2026"
-  const concat = nums.join('');
-  if (!isNaN(concat) && concat.length === 4) return parseInt(concat, 10);
-  // suma estándar para "dos mil veintiséis" → [2,1000,26] → 2026
+
+  // Suma estándar: "dos mil veintiséis" → [2,1000,26] → 2026
   let total = 0, cur = 0;
   for (const n of nums) {
     if (n === 1000) { total += (cur || 1) * 1000; cur = 0; }
     else cur += n;
   }
-  return total + cur;
+  const sumResult = total + cur;
+  if (sumResult >= 1900 && sumResult <= 2200) return sumResult;
+
+  // Fallback por concatenación: "veinte veintiséis" → [20,26] → "2026"
+  const concat = nums.join('');
+  if (concat.length === 4 && !Number.isNaN(Number(concat))) {
+    const concatResult = Number.parseInt(concat, 10);
+    if (concatResult >= 1900 && concatResult <= 2200) return concatResult;
+  }
+
+  return sumResult;
 }
 
 // ── Scorers por modo ──────────────────────────────────────────────────────────

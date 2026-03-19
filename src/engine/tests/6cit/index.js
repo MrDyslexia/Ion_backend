@@ -7,6 +7,7 @@ const { TestRunner, CancelledError }  = require('../../TestRunner');
 const { QUESTIONS, MAX_TOTAL_SCORE }  = require('./questions');
 const { scoreAnswer, interpretScore } = require('./scorer');
 const { evaluatePartialResponse }     = require('../../ResponseValidator');
+const { sleep }                       = require('../../utils');
 
 class SixCITTest extends BaseTest {
   get id()       { return 'sixcit'; }
@@ -128,7 +129,5 @@ class SixCITTest extends BaseTest {
 
   interpret(score) { return interpretScore(score); }
 }
-
-function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 module.exports = { SixCITTest };

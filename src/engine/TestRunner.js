@@ -30,6 +30,7 @@
 
 const { isValidResponse, isCancelIntent } = require('./ResponseValidator');
 const { synthesizeSpeech }                = require('./ttsHelper');
+const { sleep }                           = require('./utils');
 
 const STATE = {
   IDLE:             'IDLE',
@@ -424,10 +425,6 @@ class TestRunner {
     this._confirmQueue   = null;
     this.state = STATE.IDLE;
   }
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 module.exports = { TestRunner, CancelledError, STATE };

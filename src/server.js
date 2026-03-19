@@ -13,6 +13,7 @@ const {
 
 const { TestRunner, CancelledError } = require('./engine/TestRunner');
 const { getTest }                    = require('./engine/tests/registry');
+const { synthesizeSpeech }           = require('./engine/ttsHelper');
 
 const app    = express();
 const server = http.createServer(app);
@@ -57,28 +58,6 @@ const initVosk = async () => {
   } catch (e) { console.error('❌ Vosk:', e); return false; }
 };
 
-/** ======================= TTS ======================= */
-async function synthesizeSpeech(text) {
-  const _t0tts = Date.now();
-  try {
-    const resp = await fetch(`${TTS_URL}/synthesize`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ text, language: 'es' })
-    });
-    if (!resp.ok) throw new Error(`TTS HTTP ${resp.status}`);
-    const arrayBuf = await resp.arrayBuffer();
-    const buf = Buffer.from(arrayBuf);
-    console.log(`⏱️  [TTS ] ${buf.length} bytes → ${Date.now() - _t0tts}ms`);
-    return buf;
-  } catch (e) {
-    console.error(`❌ TTS error (${Date.now() - _t0tts}ms):`, e.message);
-    return null;
-  }
-}
-
-// Exponer synthesizeSpeech para que TestRunner lo use via ttsHelper
-// ttsHelper.js lee TTS_URL del env directamente, así que no necesita importar esto.
 
 /** ======================= System prompt ======================= */
 function buildSystemPrompt(patient) {
@@ -158,15 +137,10 @@ async function executeTool(name, args, ctx) {
         const test   = getTest(testId);
         const result = await test.run(ctx, runner);
 
-        // ── Guardar en BD en background (no bloquear el flujo de voz) ──
-        setImmediate(() => {
-          try {
-            evaluationOps.save(ctx.sessionId, ctx.patient.id, result);
-            console.log(`✅ [Test] ${testId} guardado → ${result.status}, score: ${result.totalScore}/${result.maxScore}`);
-          } catch (e) {
-            console.error('❌ [Test] Error guardando evaluación:', e.message);
-          }
-        });
+        // ── Guardar en BD ──
+        evaluationOps.save(ctx.sessionId, ctx.patient.id, result)
+          .then(() => console.log(`✅ [Test] ${testId} guardado → ${result.status}, score: ${result.totalScore}/${result.maxScore}`))
+          .catch(e => console.error('❌ [Test] Error guardando evaluación:', e.message));
 
         // ── Limpiar el diálogo ANTES de hablar (sin datos de puntaje) ──
         ctx.dialog = ctx.dialog.filter(m => {
@@ -323,9 +297,10 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
   if (ctx) ctx._testJustStarted = false;
 
   if (fullResponse.trim() && !suppressTTS) {
-    synthesizeSpeech(fullResponse).then(audioBuf => {
+    const ttsPromise = synthesizeSpeech(fullResponse).then(audioBuf => {
       if (audioBuf) socket.emit('tts_audio', { audio: audioBuf.toString('base64'), mimeType: 'audio/wav' });
     }).catch(e => console.error('❌ TTS pipeline:', e.message));
+    if (ctx) ctx._pendingTTS = ttsPromise;
   } else if (suppressTTS && fullResponse.trim()) {
     console.log('🔇 [LLM ] TTS suprimido — runner activo');
   }
@@ -652,6 +627,8 @@ io.on('connection', socket => {
       ctx.userBuffer = '';
       await askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error);
     }
+    // Esperar a que el TTS termine antes de marcar la sesión como finalizada
+    if (ctx._pendingTTS) await ctx._pendingTTS.catch(() => {});
     sessionOps.end(ctx.sessionId);
     console.log(`⏹️  Recording stop: ${ctx.patient.name}`);
   });

@@ -27,7 +27,10 @@ async function initDB() {
 
   db.run(`PRAGMA foreign_keys = ON;`);
 
+  // ── Schema base ───────────────────────────────────────────────────────────────
   db.run(`
+    CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+
     CREATE TABLE IF NOT EXISTS patients (
       id             TEXT PRIMARY KEY,
       name           TEXT NOT NULL,
@@ -79,25 +82,53 @@ async function initDB() {
     CREATE INDEX IF NOT EXISTS idx_eval_session     ON evaluations(session_id);
   `);
 
-  persist();
+  // ── Migraciones ───────────────────────────────────────────────────────────────
+  const SCHEMA_VERSION = 1;
+  const versionRow = db.exec(`SELECT version FROM schema_version LIMIT 1`);
+  const currentVersion = versionRow[0]?.values[0]?.[0] ?? 0;
+
+  if (currentVersion < SCHEMA_VERSION) {
+    // Migraciones futuras: agregar bloques if (currentVersion < N) aquí
+    if (currentVersion === 0) {
+      db.run(`INSERT INTO schema_version (version) VALUES (?)`, [SCHEMA_VERSION]);
+    } else {
+      db.run(`UPDATE schema_version SET version = ?`, [SCHEMA_VERSION]);
+    }
+    console.log(`🔄 Schema migrado: v${currentVersion} → v${SCHEMA_VERSION}`);
+  }
+
+  schedulePersist();
   console.log('✅ SQLite (sql.js) listo:', DB_PATH);
   return db;
 }
 
-/** Persiste el DB en disco después de cada escritura */
-function persist() {
+/** Persiste el DB en disco (async, sin bloquear el event loop) */
+let _persistTimer = null;
+
+function schedulePersist() {
   if (!db) return;
+  clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(() => {
+    fs.promises.writeFile(DB_PATH, Buffer.from(db.export()))
+      .catch(e => console.error('❌ Error persistiendo DB:', e.message));
+  }, 2000);
+}
+
+/** Persistencia inmediata para escrituras críticas (evaluaciones) */
+async function persistNow() {
+  if (!db) return;
+  clearTimeout(_persistTimer);
   try {
-    fs.writeFileSync(DB_PATH, Buffer.from(db.export()));
+    await fs.promises.writeFile(DB_PATH, Buffer.from(db.export()));
   } catch (e) {
     console.error('❌ Error persistiendo DB:', e.message);
   }
 }
 
-/** Helper: ejecuta y persiste */
+/** Helper: ejecuta y encola persistencia */
 function run(sql, params = []) {
   db.run(sql, params);
-  persist();
+  schedulePersist();
 }
 
 /** Helper: devuelve array de filas como objetos */
@@ -184,9 +215,9 @@ const evaluationOps = {
   /**
    * Guarda el resultado completo de un test.
    */
-  save(sessionId, patientId, result) {
+  async save(sessionId, patientId, result) {
     const id = randomUUID();
-    run(
+    db.run(
       `INSERT INTO evaluations (
         id, session_id, patient_id, test_id, test_version,
         status, started_at, ended_at,
@@ -211,6 +242,7 @@ const evaluationOps = {
         result.cancelledAtQuestion   || null
       ]
     );
+    await persistNow();
     return id;
   },
 
