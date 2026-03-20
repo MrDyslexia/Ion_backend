@@ -10,3 +10,4 @@ bun.*
 data/
 *.db
 INFORME_TECNICO.md
+.claude
