@@ -122,15 +122,43 @@ function scoreTime(question, answer) {
   const now  = new Date();
   let mentionedHour = null, mentionedMinute = 0;
 
+  // Palabras para hora (1–12) y minutos (0–59 en palabras)
+  const hourWords = ['una','dos','tres','cuatro','cinco','seis','siete','ocho','nueve','diez','once','doce'];
+  const minuteWords = {
+    'cinco':5,'diez':10,'once':11,'doce':12,'trece':13,'catorce':14,'quince':15,
+    'dieciseis':16,'diecisiete':17,'dieciocho':18,'diecinueve':19,
+    'veinte':20,'veintiuno':21,'veintidos':22,'veintitres':23,'veinticuatro':24,
+    'veinticinco':25,'veintiseis':26,'veintisiete':27,'veintiocho':28,'veintinueve':29,
+    'treinta':30,'cuarenta':40,'cincuenta':50
+  };
+
   const timeMatch = text.match(/(\d{1,2})(?::(\d{2}))?/);
   if (timeMatch) {
     mentionedHour   = parseInt(timeMatch[1], 10);
     mentionedMinute = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
-    if (text.includes('media'))                               mentionedMinute = 30;
-    if (text.includes('cuarto') || text.includes('quince'))   mentionedMinute = 15;
+    if (text.includes('media'))                             mentionedMinute = 30;
+    if (/\bcuarto\b/.test(text) || /\bquince\b/.test(text)) mentionedMinute = 15;
   } else {
-    ['una','dos','tres','cuatro','cinco','seis','siete','ocho','nueve','diez','once','doce']
-      .forEach((w, i) => { if (text.includes(w)) mentionedHour = i + 1; });
+    // Usar límites de palabra para evitar que "ocho" coincida dentro de "dieciocho"
+    hourWords.forEach((w, i) => {
+      if (new RegExp(`\\b${w}\\b`).test(text)) mentionedHour = i + 1;
+    });
+
+    // Extraer minutos desde palabras numéricas que aparezcan después de la hora
+    // Ej: "cuatro dieciocho" → hora=4, minutos=18
+    if (mentionedHour !== null) {
+      // Buscar palabras de minutos que NO sean la misma que la hora
+      const hourWord = hourWords[mentionedHour - 1];
+      for (const [word, val] of Object.entries(minuteWords)) {
+        if (word !== hourWord && new RegExp(`\\b${word}\\b`).test(text)) {
+          mentionedMinute = val;
+          break;
+        }
+      }
+    }
+
+    if (/\bmedia\b/.test(text))                              mentionedMinute = 30;
+    if (/\bcuarto\b/.test(text) || /\bquince\b/.test(text)) mentionedMinute = 15;
   }
 
   if (mentionedHour === null) return { score: question.maxScore, detail: 'no_se_pudo_interpretar' };

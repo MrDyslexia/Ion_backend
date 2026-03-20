@@ -110,11 +110,19 @@ class TestRunner {
     this._collectMode     = 'single';
     this._currentQuestion = '';
     this._allAccumulated  = [];
+
+    // Ventana de pre-armado: STT que llega justo al final del TTS
+    this._bufferedSTT = null;
+    this._lastSayEnd  = 0;
+
+    // Flag de cancelación: permite que say() y waitForResponse() aborten limpiamente
+    this._cancelled = false;
   }
 
   // ── TTS ──────────────────────────────────────────────────────────────────────
 
   async say(text) {
+    if (this._cancelled) throw new CancelledError();
     this.ctx.vadEnabled = false;
 
     console.log(`🔊 [Runner] "${text.slice(0, 70)}"`);
@@ -128,10 +136,17 @@ class TestRunner {
         mimeType: 'audio/wav'
       });
       const durationMs = Math.max(1000, (audioBuf.length / 32000) * 1000);
-      await sleep(durationMs + 600);
+      await sleep(durationMs);
+      if (this._cancelled) throw new CancelledError();
+      // Registrar fin del audio ANTES del buffer extra: STT que llegue
+      // en esta ventana se guarda en lugar de descartarse (race condition fix)
+      this._lastSayEnd = Date.now();
+      await sleep(600);
     } else {
+      this._lastSayEnd = Date.now();
       await sleep(1500);
     }
+    if (this._cancelled) throw new CancelledError();
   }
 
   // ── Callbacks VAD ─────────────────────────────────────────────────────────────
@@ -147,6 +162,13 @@ class TestRunner {
     if (!this._vadResolve) return;
 
     const text = this._vadAccumulated.join(' ').trim();
+
+    // Ignorar silencio si aún no hay nada acumulado: el paciente no ha empezado a hablar
+    if (!text) {
+      console.log('🔇 [VAD] Silencio sin acumulado — ignorado (esperando habla)');
+      return;
+    }
+
     console.log(`🔇 [VAD] Silencio detectado. Acumulado: "${text.slice(0, 60)}"`);
 
     clearTimeout(this._vadTimeout);
@@ -195,6 +217,12 @@ class TestRunner {
     }
 
     if (this.state !== STATE.WAITING_RESPONSE) {
+      // Guardar STT que llega dentro de 1s del fin del TTS (race condition al inicio de espera)
+      if (this.state === STATE.IDLE && Date.now() - this._lastSayEnd < 1000) {
+        console.log(`📦 [Runner] STT pre-armado (llegó justo al terminar TTS): "${t.slice(0, 40)}"`);
+        this._bufferedSTT = t;
+        return;
+      }
       console.log(`🔇 [Runner] STT descartado (estado: ${this.state}): "${t.slice(0, 40)}"`);
       return;
     }
@@ -255,6 +283,14 @@ class TestRunner {
   // ── Espera interna: modo single ───────────────────────────────────────────────
 
   _waitSingle(timeoutMs) {
+    // Si hay STT pre-armado, resolverlo directamente sin esperar
+    if (this._bufferedSTT) {
+      const buffered = this._bufferedSTT;
+      this._bufferedSTT = null;
+      console.log(`📦 [Runner] Flush pre-armado (single): "${buffered.slice(0, 40)}"`);
+      this.state = STATE.IDLE;
+      return Promise.resolve({ text: buffered, timedOut: false });
+    }
     return new Promise(resolve => {
       this._resolve = resolve;
       this._timeout = setTimeout(() => {
@@ -271,6 +307,14 @@ class TestRunner {
     this._vadAccumulated = [];
     this.ctx.vadEnabled  = true;
     if (silenceMs !== null) this.ctx.vadSilenceMs = silenceMs;
+
+    // Si hay STT pre-armado, añadirlo como primer fragmento acumulado
+    if (this._bufferedSTT) {
+      const buffered = this._bufferedSTT;
+      this._bufferedSTT = null;
+      console.log(`📦 [Runner] Flush pre-armado (vad): "${buffered.slice(0, 40)}"`);
+      this._vadAccumulated.push(buffered);
+    }
 
     return new Promise(resolve => {
       this._vadResolve = resolve;
@@ -309,7 +353,7 @@ class TestRunner {
 
     const longQuestions = ['countdown', 'months_reverse'];
     const mode = longQuestions.includes(questionId) ? 'vad' : 'single';
-    const silenceMs = questionId === 'months_reverse' ? 2800 : 1800;
+    const silenceMs = questionId === 'months_reverse' ? 2800 : questionId === 'countdown' ? 2500 : 1800;
     this._allAccumulated = [];
 
     // ── Intento 1 ─────────────────────────────────────────────────────────────
@@ -416,6 +460,7 @@ class TestRunner {
   // ── Limpieza ──────────────────────────────────────────────────────────────────
 
   destroy() {
+    this._cancelled = true;
     this.ctx.resetVAD();
     clearTimeout(this._timeout);
     clearTimeout(this._vadTimeout);

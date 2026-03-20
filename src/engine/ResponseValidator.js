@@ -45,6 +45,35 @@ function looksLikeAddress(text) {
 }
 
 /**
+ * Valida si un texto parece un intento de cuenta regresiva del 20 al 1.
+ * Evita llamar al LLM cuando el STT captura texto truncado o parcial.
+ */
+function looksLikeCountdown(text) {
+  const t = (text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const numberWords = [
+    'veinte','diecinueve','dieciocho','diecisiete','dieciseis',
+    'quince','catorce','trece','doce','once','diez',
+    'nueve','ocho','siete','seis','cinco','cuatro','tres','dos','uno'
+  ];
+  // También aceptar si hay dígitos en rango 1–20
+  const hasDigits = /\b(20|1[0-9]|[1-9])\b/.test(t);
+  const wordCount = numberWords.filter(w => t.includes(w)).length;
+  return wordCount >= 3 || (wordCount >= 1 && hasDigits);
+}
+
+/**
+ * Valida si un texto parece un intento de meses en orden inverso.
+ */
+function looksLikeMonths(text) {
+  const t = (text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const months = [
+    'enero','febrero','marzo','abril','mayo','junio',
+    'julio','agosto','septiembre','octubre','noviembre','diciembre'
+  ];
+  return months.filter(m => t.includes(m)).length >= 3;
+}
+
+/**
  * ¿El texto es una respuesta válida a la pregunta?
  * Retorna: 'valid' | 'noise'
  */
@@ -53,6 +82,16 @@ async function isValidResponse(questionContext, transcribedText) {
 
   // Bypass para address_recall: si contiene fragmentos de dirección, es válido
   if (questionContext && questionContext.toLowerCase().includes('direcci') && looksLikeAddress(transcribedText)) {
+    return 'valid';
+  }
+
+  // Bypass para countdown: si contiene palabras/dígitos numéricos, es válido
+  if (questionContext && questionContext.toLowerCase().includes('contar') && looksLikeCountdown(transcribedText)) {
+    return 'valid';
+  }
+
+  // Bypass para meses inversos: si contiene nombres de meses, es válido
+  if (questionContext && questionContext.toLowerCase().includes('meses') && looksLikeMonths(transcribedText)) {
     return 'valid';
   }
 
