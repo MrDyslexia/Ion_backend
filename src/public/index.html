@@ -429,6 +429,36 @@ let isRecording  = false;
 let aiParagraph  = null, aiBuffer = '';
 let currentPatientId = null;
 
+// ── Cola de audio TTS ──────────────────────────────────────────────────────
+let ttsQueue = [], ttsPlaying = false, ttsCurrentEl = null;
+
+function ttsEnqueue(bytes, mimeType) {
+  ttsQueue.push({ bytes, mimeType });
+  if (!ttsPlaying) ttsPlayNext();
+}
+
+function ttsPlayNext() {
+  if (!ttsQueue.length) { ttsPlaying = false; ttsCurrentEl = null; return; }
+  ttsPlaying = true;
+  const { bytes, mimeType } = ttsQueue.shift();
+  const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+  const el = new Audio(url);
+  ttsCurrentEl = el;
+  el.onended = () => { URL.revokeObjectURL(url); ttsPlayNext(); };
+  el.onerror = ()  => { URL.revokeObjectURL(url); ttsPlayNext(); };
+  el.play().catch(() => { URL.revokeObjectURL(url); ttsPlayNext(); });
+}
+
+function ttsStop() {
+  ttsQueue = [];
+  if (ttsCurrentEl) {
+    ttsCurrentEl.pause();
+    try { URL.revokeObjectURL(ttsCurrentEl.src); } catch(_) {}
+    ttsCurrentEl = null;
+  }
+  ttsPlaying = false;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
    INIT: fetch stats → get defaultPatientId → auto-identify
 ───────────────────────────────────────────────────────────────────────── */
@@ -485,6 +515,7 @@ function initSocket() {
   });
 
   socket.on('assistant_text', ({delta}) => {
+    ttsStop(); // cancelar audio previo al recibir nueva respuesta
     const p = getAiP();
     if (p.textContent==='…') p.textContent='';
     aiBuffer += delta; p.textContent = aiBuffer;
@@ -500,9 +531,7 @@ function initSocket() {
   socket.on('tts_audio', ({audio, mimeType}) => {
     try {
       const bytes = Uint8Array.from(atob(audio), c=>c.charCodeAt(0));
-      const el = new Audio(URL.createObjectURL(new Blob([bytes],{type:mimeType})));
-      el.play().catch(()=>{});
-      el.onended = ()=>URL.revokeObjectURL(el.src);
+      ttsEnqueue(bytes, mimeType);
     } catch(e) { console.error('TTS',e); }
   });
 

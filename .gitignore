@@ -11,3 +11,5 @@ data/
 *.db
 INFORME_TECNICO.md
 .claude
+CLAUDE.md
+data/*

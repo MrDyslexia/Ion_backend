@@ -39,9 +39,9 @@ const STATE = {
 };
 
 // ── Timeouts ──────────────────────────────────────────────────────────────────
-const TIMEOUT_FIRST_SHORT  = 20000;  // 20s sin actividad → repetir pregunta (modo single)
-const TIMEOUT_FIRST_LONG   = 30000;  // 30s sin STT ni VAD → repetir pregunta (modo vad)
-const TIMEOUT_RETRY        = 18000;  // retry tras no_response
+const TIMEOUT_FIRST_SHORT  = 40000;  // 40s sin actividad → repetir pregunta (modo single)
+const TIMEOUT_FIRST_LONG   = 60000;  // 60s sin STT ni VAD → repetir pregunta (modo vad)
+const TIMEOUT_RETRY        = 30000;  // retry tras no_response
 const TIMEOUT_CONFIRM      =  8000;  // confirmación cancelación
 
 // ── Patrones de filler ────────────────────────────────────────────────────────
@@ -353,7 +353,7 @@ class TestRunner {
 
     const longQuestions = ['countdown', 'months_reverse'];
     const mode = longQuestions.includes(questionId) ? 'vad' : 'single';
-    const silenceMs = questionId === 'months_reverse' ? 2800 : questionId === 'countdown' ? 2500 : 1800;
+    const silenceMs = questionId === 'months_reverse' ? 5000 : questionId === 'countdown' ? 4500 : 3500;
     this._allAccumulated = [];
 
     // ── Intento 1 ─────────────────────────────────────────────────────────────
