@@ -91,6 +91,8 @@
     .status-bar.disconnected { background: rgba(239,67,67,.07);  color: var(--red);    border-color: rgba(239,67,67,.2); }
     .status-bar.thinking     { background: rgba(240,180,41,.07); color: var(--yellow); border-color: rgba(240,180,41,.2); }
     .status-bar.test         { background: rgba(123,92,246,.1);  color: #a78bfa;       border-color: rgba(123,92,246,.25); animation: pulse 1.5s ease-in-out infinite; }
+    .status-bar.waiting      { background: rgba(77,142,245,.07); color: var(--accent); border-color: rgba(77,142,245,.2); }
+    .status-bar.turn-active  { background: rgba(32,212,126,.12); color: var(--green);  border-color: rgba(32,212,126,.35); animation: pulse 1s ease-in-out infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.7} }
 
     /* ── CMD HINT ── */
@@ -293,7 +295,7 @@
   <div id="statusBar" class="status-bar disconnected">● Conectando…</div>
 
   <!-- HINT -->
-  <div class="cmd-hint">
+  <div id="cmdHint" class="cmd-hint">
     Di <strong>"Hola ALMA"</strong> para activar &nbsp;·&nbsp; <strong>"Gracias ALMA"</strong> para finalizar
   </div>
 
@@ -301,6 +303,7 @@
   <div class="controls">
     <button id="startBtn" class="btn btn-primary" onclick="startRecording()">▶ Iniciar grabación</button>
     <button id="stopBtn"  class="btn btn-danger"  onclick="stopRecording()" disabled>■ Detener grabación</button>
+    <button id="modeBtn"  class="btn btn-info btn-sm" onclick="toggleConvMode()" title="Cambiar modo de conversación">◈ Modo: siempre activo</button>
   </div>
 
   <!-- VISUALIZER -->
@@ -425,9 +428,11 @@
    STATE
 ───────────────────────────────────────────────────────────────────────── */
 let socket, audioContext, analyser, stream, animId;
-let isRecording  = false;
-let aiParagraph  = null, aiBuffer = '';
+let isRecording      = false;
+let aiParagraph      = null, aiBuffer = '';
 let currentPatientId = null;
+let convMode         = 'always_on'; // 'always_on' | 'wake_per_turn'
+let isConvActive     = false;       // reflejo local de ctx.conversationActive
 
 // ── Cola de audio TTS ──────────────────────────────────────────────────────
 let ttsQueue = [], ttsPlaying = false, ttsCurrentEl = null;
@@ -499,18 +504,58 @@ function initSocket() {
   socket.on('transcription', d => renderTranscription(d.text, d.isFinal));
 
   socket.on('voice_command_detected', d => {
-    if (d.action==='start_conversation') { setStatus('connected','● Conversación activa'); toast('Conversación iniciada','success'); }
-    if (d.action==='stop_conversation')  { setStatus('connected','● Listo para grabar');   toast('Conversación finalizada','info'); }
+    if (d.action === 'start_conversation') {
+      isConvActive = true;
+      if (convMode === 'wake_per_turn') {
+        setStatus('waiting', '◌ Di "Ok ALMA" para hablar');
+      } else {
+        setStatus('connected', '● Conversación activa');
+      }
+      toast('Conversación iniciada', 'success');
+    }
+    if (d.action === 'stop_conversation') {
+      isConvActive = false;
+      setStatus('connected', '● Listo para grabar');
+      toast('Conversación finalizada', 'info');
+    }
+    if (d.action === 'turn_start') {
+      setStatus('turn-active', '● Escuchando tu turno…');
+    }
+  });
+
+  socket.on('conversation_mode_changed', d => {
+    convMode = d.mode;
+    updateModeUI();
+    toast(d.mode === 'wake_per_turn' ? 'Modo "Ok ALMA" activado' : 'Modo siempre activo activado', 'info');
+  });
+
+  socket.on('conversation_mode_state', d => {
+    if (d.listeningForTurn) {
+      setStatus('turn-active', '● Escuchando tu turno…');
+    } else if (d.waitingForWakeWord) {
+      setStatus('waiting', '◌ Di "Ok ALMA" para hablar');
+    }
   });
 
   socket.on('assistant_status', d => {
-    if (d.status==='thinking') setStatus('thinking','◌ ALMA pensando…');
-    if (d.status==='idle')     setStatus('connected','● Listo para grabar');
+    if (d.status === 'thinking') setStatus('thinking', '◌ ALMA pensando…');
+    if (d.status === 'idle') {
+      // En wake_per_turn con conversación activa, volver a esperar wake word
+      if (convMode === 'wake_per_turn' && isConvActive) {
+        setStatus('waiting', '◌ Di "Ok ALMA" para hablar');
+      } else {
+        setStatus('connected', '● Listo para grabar');
+      }
+    }
   });
 
   socket.on('test_started',  () => setStatus('test','◎ Test en curso…'));
   socket.on('test_finished', () => {
-    setStatus('connected','● Listo para grabar');
+    if (convMode === 'wake_per_turn' && isConvActive) {
+      setStatus('waiting', '◌ Di "Ok ALMA" para hablar');
+    } else {
+      setStatus('connected','● Listo para grabar');
+    }
     if (document.getElementById('debugBody').classList.contains('open')) loadEvals();
   });
 
@@ -573,12 +618,21 @@ async function startRecording() {
     });
     audioContext = new AudioContext({sampleRate:16000});
     const src = audioContext.createMediaStreamSource(stream);
+
+    // Filtro highpass: elimina ruido subgrave < 80Hz (ventilación, golpes, AC)
+    const hpf = audioContext.createBiquadFilter();
+    hpf.type = 'highpass'; hpf.frequency.value = 80; hpf.Q.value = 0.7;
+    // Filtro lowpass: elimina sobre 7500Hz (fuera del rango del habla a 16kHz)
+    const lpf = audioContext.createBiquadFilter();
+    lpf.type = 'lowpass'; lpf.frequency.value = 7500; lpf.Q.value = 0.7;
+    src.connect(hpf); hpf.connect(lpf);
+
     analyser = audioContext.createAnalyser(); analyser.fftSize = 256;
-    src.connect(analyser);
+    lpf.connect(analyser);
     const cv=document.getElementById('viz'); cv.width=cv.offsetWidth; cv.height=cv.offsetHeight;
     drawViz();
     const proc = audioContext.createScriptProcessor(4096,1,1);
-    src.connect(proc); proc.connect(audioContext.destination);
+    lpf.connect(proc); proc.connect(audioContext.destination);
     proc.onaudioprocess = e => {
       if(!isRecording||!socket?.connected) return;
       const inp=e.inputBuffer.getChannelData(0), pcm=new Int16Array(inp.length);
@@ -634,6 +688,8 @@ function renderTranscription(text, isFinal) {
       {div.className='msg-cmd-on'; div.innerHTML=`▶ <strong>Activación:</strong> ${text}`;}
     else if(['gracias alma','detente alma','adiós alma','hasta luego alma'].some(c=>t.includes(c)))
       {div.className='msg-cmd-off'; div.innerHTML=`■ <strong>Fin:</strong> ${text}`;}
+    else if(t.includes('ok alma')||t.includes('oye alma'))
+      {div.className='msg-cmd-on'; div.innerHTML=`◈ <strong>Ok ALMA:</strong> ${text}`;}
     else
       {div.className='msg-final'; div.textContent=text;}
     box.querySelectorAll('.msg-interim').forEach(e=>e.remove());
@@ -659,6 +715,29 @@ function getAiP() {
 }
 function clearAssistant(){document.getElementById('aBox').innerHTML='';aiParagraph=null;aiBuffer='';}
 function forceAsk(){socket?.emit('get_final_transcription');}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   MODO DE CONVERSACIÓN
+───────────────────────────────────────────────────────────────────────── */
+function toggleConvMode() {
+  convMode = convMode === 'always_on' ? 'wake_per_turn' : 'always_on';
+  socket?.emit('set_conversation_mode', { mode: convMode });
+  updateModeUI();
+}
+
+function updateModeUI() {
+  const btn  = document.getElementById('modeBtn');
+  const hint = document.getElementById('cmdHint');
+  if (convMode === 'wake_per_turn') {
+    btn.textContent = '◈ Modo: "Ok ALMA"';
+    btn.className = 'btn btn-warn btn-sm';
+    hint.innerHTML = 'Di <strong>"Hola ALMA"</strong> para activar &nbsp;·&nbsp; <strong>"Ok ALMA"</strong> para hablar &nbsp;·&nbsp; <strong>"Gracias ALMA"</strong> para finalizar';
+  } else {
+    btn.textContent = '◈ Modo: siempre activo';
+    btn.className = 'btn btn-info btn-sm';
+    hint.innerHTML = 'Di <strong>"Hola ALMA"</strong> para activar &nbsp;·&nbsp; <strong>"Gracias ALMA"</strong> para finalizar';
+  }
+}
 
 /* ─────────────────────────────────────────────────────────────────────────
    UI HELPERS

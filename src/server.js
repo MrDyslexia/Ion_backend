@@ -73,10 +73,11 @@ Paciente: ${patient.name}, ${patient.age} años.${notas}
 
 Cuando el paciente te salude, responde con un saludo breve y pregunta cómo se siente.
 Cuando el paciente esté dispuesto, ofrécele una evaluación breve de memoria.
-Si acepta, usa la herramienta conduct_test con testId "sixcit" UNA SOLA VEZ.
+USA conduct_test ÚNICAMENTE si: (1) tú mismo le ofreciste la evaluación en el turno anterior Y (2) el paciente respondió con una aceptación clara como "sí", "de acuerdo", "adelante", "quiero", "vamos". Ninguna otra situación justifica llamar conduct_test.
 NO administres el test manualmente. NO hagas preguntas de evaluación tú mismo.
 La evaluación la conduce el sistema de forma estructurada.
-Cuando el paciente se despida, el sistema maneja la despedida automáticamente — tú NO debes despedirte.`;
+Cuando el paciente se despida, el sistema maneja la despedida automáticamente — tú NO debes despedirte.
+NO tienes acceso a internet ni puedes buscar información en línea. Si el paciente pide una búsqueda web o información en tiempo real, explícale brevemente que actualmente no tienes esa capacidad, pero que se incorporará en el futuro.`;
 }
 
 /** ======================= Function calling ======================= */
@@ -93,7 +94,7 @@ const LLM_TOOLS = [
     type: 'function',
     function: {
       name: 'conduct_test',
-      description: 'Conduce una evaluación cognitiva estructurada con el paciente. Úsala cuando el paciente acepte realizar una evaluación.',
+      description: 'Inicia la evaluación cognitiva 6CIT. Úsala ÚNICAMENTE cuando el paciente haya aceptado EXPLÍCITAMENTE hacer una evaluación de memoria (ejemplo: "sí quiero", "de acuerdo", "vamos"). NUNCA la uses en respuesta a preguntas sobre otros temas, búsquedas de información, o conversación general.',
       parameters: {
         type: 'object',
         properties: {
@@ -129,6 +130,10 @@ async function executeTool(name, args, ctx) {
       return 'El paciente ya realizó una evaluación hoy. No es necesario repetirla.';
     }
 
+    // Guardar el último mensaje de usuario que disparó el test (para limpiarlo post-test)
+    const lastUserMsg = [...ctx.dialog].reverse().find(m => m.role === 'user');
+    ctx._testTriggerContent = lastUserMsg?.content || null;
+
     // Lanzar el test de forma asíncrona, sin bloquear el tool call del LLM
     setImmediate(async () => {
       const runner = new TestRunner(ctx);
@@ -143,16 +148,36 @@ async function executeTool(name, args, ctx) {
           .catch(e => console.error('❌ [Test] Error guardando evaluación:', e.message));
 
         // ── Limpiar el diálogo ANTES de hablar (sin datos de puntaje) ──
+        const triggerContent = ctx._testTriggerContent;
+        ctx._testTriggerContent = null;
+        // Eliminar: tool messages, assistant con tool_calls, system internos del test,
+        // el mensaje de usuario que disparó el test (evita non-sequitur post-test),
+        // y la respuesta del LLM que anunciaba el inicio ("Estamos iniciando la evaluación").
+        let triggerRemoved = false;
         ctx.dialog = ctx.dialog.filter(m => {
           if (m.role === 'tool')      return false;
           if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) return false;
           if (m.role === 'system'    && m.content?.includes('conduct_test'))    return false;
           if (m.role === 'system'    && m.content?.includes('evaluación'))      return false;
           if (m.role === 'system'    && m.content?.includes('Evaluación'))      return false;
+          // Eliminar el mensaje de usuario que disparó el test (solo la última ocurrencia)
+          if (m.role === 'user' && !triggerRemoved && triggerContent && m.content === triggerContent) {
+            triggerRemoved = true;
+            return false;
+          }
+          // Eliminar respuesta del LLM que anunciaba el inicio del test
+          if (m.role === 'assistant' && m.content && (
+            m.content.includes('iniciando la evaluación') ||
+            m.content.includes('Iniciando la evaluación') ||
+            m.content.includes('conducirá la evaluación')
+          )) return false;
           return true;
         });
         ctx.testDoneThisSession = true;
         ctx.activeRunner = null;  // limpiar ANTES de emitir para evitar suppress TTS
+
+        // Inyectar contexto para que el LLM sepa lo que ocurrió al retomar la conversación
+        ctx.dialog.push({ role: 'system', content: 'La evaluación cognitiva 6CIT acaba de completarse con éxito. Retoma la conversación normal con el paciente sobre cualquier tema que él desee.' });
 
         // ── Emitir frase de cierre/retoma directamente via TTS (sin LLM) ──
         // El LLM tiende a ignorar el resumePrompt y saludar de nuevo.
@@ -169,6 +194,12 @@ async function executeTool(name, args, ctx) {
         ctx.conversationActive = true;
         console.log(`🔄 [Test] Post-test: frase de cierre emitida, conversación activa`);
 
+        // Notificar al cliente que el test terminó y restablecer estado del modo
+        ctx.socket.emit('test_finished');
+        if (ctx.conversationMode === 'wake_per_turn') {
+          ctx.socket.emit('conversation_mode_state', { listeningForTurn: false, waitingForWakeWord: true });
+        }
+
         // TTS en background — no bloquea
         synthesizeSpeech(resumeText).then(buf => {
           if (buf) ctx.socket.emit('tts_audio', { audio: buf.toString('base64'), mimeType: 'audio/wav' });
@@ -180,10 +211,15 @@ async function executeTool(name, args, ctx) {
           ctx.activeRunner = null;
           ctx.testDoneThisSession = true;
           ctx.conversationActive  = true;
+          ctx.dialog.push({ role: 'system', content: 'La evaluación cognitiva fue detenida por el paciente. Retoma la conversación normal con amabilidad.' });
           const cancelText = 'Hemos detenido la evaluación. No se preocupe. ¿Hay algo en lo que pueda ayudarle?';
           ctx.socket.emit('assistant_text',      { delta: cancelText });
           ctx.socket.emit('assistant_text_done', { text: cancelText });
           ctx.dialog.push({ role: 'assistant', content: cancelText });
+          ctx.socket.emit('test_finished');
+          if (ctx.conversationMode === 'wake_per_turn') {
+            ctx.socket.emit('conversation_mode_state', { listeningForTurn: false, waitingForWakeWord: true });
+          }
           synthesizeSpeech(cancelText).then(buf => {
             if (buf) ctx.socket.emit('tts_audio', { audio: buf.toString('base64'), mimeType: 'audio/wav' });
           }).catch(console.error);
@@ -358,12 +394,17 @@ class SessionContext {
     this.testDoneThisSession  = false; // flag para bloquear conduct_test post-test
     this._byeCooldown         = false; // bloquear STT extra tras despedida
     this._compressed          = false; // flag para comprimir contexto solo una vez
+    // Modo de conversación
+    this.conversationMode  = 'always_on'; // 'always_on' | 'wake_per_turn'
+    this.listeningForTurn  = false;       // true mientras el turno "ok alma" está activo
+    this.turnBuffer        = '';          // acumula STT durante el turno activo
+    this._turnTimer        = null;        // timer de silencio para cerrar el turno
     // VAD state (solo activo durante test)
     this.vadEnabled         = false;
     this.vadIsSpeaking      = false;
     this.vadSilenceTimer    = null;
     this.vadSilenceMs       = 1800;   // ms de silencio para declarar fin de habla
-    this.vadSpeechThreshold = 300;    // RMS mínimo para considerar habla (0–32767)
+    this.vadSpeechThreshold = 800;    // RMS mínimo para considerar habla (0–32767)
   }
 
   createVoskRec() {
@@ -435,20 +476,63 @@ class SessionContext {
 function processVoiceCommands(text, ctx) {
   const t = text.toLowerCase().trim();
 
-  if (t.includes('hola alma') && !ctx.conversationActive) {
-    const question = t.split('hola alma')[1]?.trim() || '';
-    ctx.conversationActive = true;
-    if (question) { ctx.dialog.push({ role: 'user', content: question }); messageOps.add(ctx.sessionId, 'user', question); }
-    return { isCommand: true, action: 'start_conversation', question, greet: !question };
+  // ── Activación de sesión ("Hola ALMA") ────────────────────────────────────
+  if (t.includes('hola alma')) {
+    if (!ctx.conversationActive) {
+      // En wake_per_turn no procesar texto tras "hola alma" como pregunta: solo saludar
+      const question = ctx.conversationMode === 'always_on'
+        ? (t.split('hola alma')[1]?.trim() || '')
+        : '';
+      ctx.conversationActive = true;
+      if (question) { ctx.dialog.push({ role: 'user', content: question }); messageOps.add(ctx.sessionId, 'user', question); }
+      return { isCommand: true, action: 'start_conversation', question, greet: !question };
+    }
+    // Conversación ya activa: ignorar re-activación accidental (duplicado Vosk)
+    // Si hay texto adicional tras "hola alma", procesarlo como continuación normal
+    const rest = t.split('hola alma').pop()?.trim() || '';
+    if (!rest) return { isCommand: false, action: null };
+    ctx.userBuffer += (ctx.userBuffer ? ' ' : '') + rest;
+    return { isCommand: false, action: 'continue_conversation' };
   }
 
+  // ── Fin de sesión ("Gracias ALMA", etc.) ─────────────────────────────────
   const stopCmds = ['gracias alma', 'detente alma', 'adiós alma', 'hasta luego alma', 'para alma'];
   if (stopCmds.some(c => t.includes(c)) && ctx.conversationActive) {
     ctx.conversationActive = false;
     ctx.userBuffer = '';
+    // Limpiar turno activo si lo hay
+    clearTimeout(ctx._turnTimer);
+    ctx.listeningForTurn = false;
+    ctx.turnBuffer = '';
     return { isCommand: true, action: 'stop_conversation', farewell: true };
   }
 
+  // ── Modo wake_per_turn ────────────────────────────────────────────────────
+  if (ctx.conversationMode === 'wake_per_turn' && ctx.conversationActive) {
+    // Wake word "Ok ALMA" / "Oye ALMA" → iniciar turno
+    if (t.includes('ok alma') || t.includes('oye alma')) {
+      const rest = (t.split(/ok alma|oye alma/).pop() || '').trim();
+      ctx.listeningForTurn = true;
+      ctx.turnBuffer = rest;
+      clearTimeout(ctx._turnTimer);
+      // Si ya hay texto después del wake word, arrancar el timer de silencio
+      if (rest) ctx._turnTimer = setTimeout(() => flushTurn(ctx), 2000);
+      return { isCommand: true, action: 'turn_start', text: rest };
+    }
+
+    // Si hay turno activo: acumular STT y resetear timer de silencio
+    if (ctx.listeningForTurn) {
+      ctx.turnBuffer += (ctx.turnBuffer ? ' ' : '') + t;
+      clearTimeout(ctx._turnTimer);
+      ctx._turnTimer = setTimeout(() => flushTurn(ctx), 2000);
+      return { isCommand: false, action: 'turn_accumulate' };
+    }
+
+    // Conversación activa pero sin turno → ignorar (el usuario habla para otro destino)
+    return { isCommand: false, action: null };
+  }
+
+  // ── Modo always_on ────────────────────────────────────────────────────────
   if (ctx.conversationActive && t) {
     ctx.userBuffer += (ctx.userBuffer ? ' ' : '') + t;
     return { isCommand: false, action: 'continue_conversation' };
@@ -457,6 +541,32 @@ function processVoiceCommands(text, ctx) {
   if (!ctx.conversationActive && t) ctx.userBuffer += (ctx.userBuffer ? ' ' : '') + t;
 
   return { isCommand: false, action: null };
+}
+
+/** ======================= Flush de turno (wake_per_turn) ======================= */
+/**
+ * Cierra el turno activo: envía el texto acumulado al LLM y resetea el estado.
+ * Se llama desde el timer de silencio o por get_final_transcription.
+ */
+async function flushTurn(ctx) {
+  const text   = ctx.turnBuffer.trim();
+  const socket = ctx.socket;
+  ctx.listeningForTurn = false;
+  ctx.turnBuffer       = '';
+  ctx._turnTimer       = null;
+  socket.emit('conversation_mode_state', { listeningForTurn: false });
+
+  if (!text) return;
+  console.log(`🎤 [Turn] Turno cerrado: "${text.slice(0, 60)}"`);
+  ctx.dialog.push({ role: 'user', content: text });
+  messageOps.add(ctx.sessionId, 'user', text);
+
+  await askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error);
+
+  // Tras responder, volver a estado de espera de wake word
+  if (ctx.conversationActive && ctx.conversationMode === 'wake_per_turn') {
+    socket.emit('conversation_mode_state', { listeningForTurn: false, waitingForWakeWord: true });
+  }
 }
 
 /** ======================= Socket.IO ======================= */
@@ -510,8 +620,17 @@ io.on('connection', socket => {
     ctx.processVAD(int16);   // VAD solo activo cuando runner lo habilita
     if (!isVoskReady || !ctx.voskRec) return;
 
+    // Noise gate: si el RMS del chunk es menor al umbral, enviar silencio a Vosk.
+    // Evita que Vosk genere texto de ruido de fondo débil. No afecta al VAD
+    // (que ya calculó su propio RMS arriba con processVAD).
+    const NOISE_GATE_RMS = 150;
+    let _rmsSum = 0;
+    for (let i = 0; i < int16.length; i++) _rmsSum += int16[i] * int16[i];
+    const _rms = Math.sqrt(_rmsSum / int16.length);
+    const bufToFeed = _rms < NOISE_GATE_RMS ? Buffer.alloc(audioBuf.length) : audioBuf;
+
     const _t0stt = Date.now();
-    if (ctx.voskRec.acceptWaveform(audioBuf)) {
+    if (ctx.voskRec.acceptWaveform(bufToFeed)) {
       const r   = ctx.voskRec.result();
       const txt = (r.text || '').trim();
       if (!txt) return;
@@ -556,11 +675,17 @@ io.on('connection', socket => {
             setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error), 300);
           }
         }
-      } else if (ctx.conversationActive && txt.trim()) {
+        if (cmd.action === 'turn_start') {
+          // Notificar al cliente que el turno está activo
+          socket.emit('conversation_mode_state', { listeningForTurn: true });
+        }
+      } else if (cmd.action === 'continue_conversation' && txt.trim()) {
+        // Modo always_on: cada STT va directamente al LLM
         ctx.dialog.push({ role: 'user', content: txt });
         messageOps.add(ctx.sessionId, 'user', txt);
         setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error), 300);
       }
+      // cmd.action === 'turn_accumulate': flushTurn maneja el envío via timer
     } else {
       const partial = (ctx.voskRec.partialResult().partial || '').trim();
       if (partial && partial !== ctx.lastPartial) {
@@ -584,9 +709,17 @@ io.on('connection', socket => {
     }
 
     if (ctx.conversationActive) {
-      ctx.dialog.push({ role: 'user', content: txt });
-      messageOps.add(ctx.sessionId, 'user', txt);
-      setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error), 300);
+      if (ctx.conversationMode === 'wake_per_turn') {
+        // Forzar cierre del turno si hay contenido acumulado
+        if (ctx.listeningForTurn && ctx.turnBuffer.trim()) {
+          clearTimeout(ctx._turnTimer);
+          flushTurn(ctx);
+        }
+      } else {
+        ctx.dialog.push({ role: 'user', content: txt });
+        messageOps.add(ctx.sessionId, 'user', txt);
+        setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error), 300);
+      }
     } else {
       ctx.userBuffer += (ctx.userBuffer ? ' ' : '') + txt;
     }
@@ -601,36 +734,25 @@ io.on('connection', socket => {
     console.log(`🎙️  Recording start: ${ctx.patient.name}`);
   });
 
-  socket.on('stop_recording', async () => {
+  socket.on('stop_recording', () => {
     const ctx = activeSessions.get(socket.id);
     if (!ctx) return;
     ctx.isRecording = false;
     ctx.endWavWriter();
-
-    // Si hay un test activo, destruirlo — el runner lanzará CancelledError
-    // que el manejador del test capturará limpiamente
-    if (ctx.activeRunner) {
-      console.log(`⚠️  [Test] stop_recording con test activo — destruyendo runner`);
-      ctx.activeRunner.destroy();
-    }
-
-    try {
-      fs.writeFileSync(
-        path.join(audioDir, `transcript_${socket.id}_${Date.now()}.json`),
-        JSON.stringify({ patientId: ctx.patient.id, sessionId: ctx.sessionId, endedAt: Date.now(), dialog: ctx.dialog }, null, 2)
-      );
-    } catch {}
-    const question = ctx.userBuffer.trim();
-    if (question && !ctx.conversationActive && !ctx.activeRunner) {
-      ctx.dialog.push({ role: 'user', content: question });
-      messageOps.add(ctx.sessionId, 'user', question);
-      ctx.userBuffer = '';
-      await askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error);
-    }
-    // Esperar a que el TTS termine antes de marcar la sesión como finalizada
-    if (ctx._pendingTTS) await ctx._pendingTTS.catch(() => {});
-    sessionOps.end(ctx.sessionId);
+    // Solo detiene el micrófono — no cancela el test ni finaliza la sesión
     console.log(`⏹️  Recording stop: ${ctx.patient.name}`);
+  });
+
+  socket.on('set_conversation_mode', ({ mode }) => {
+    const ctx = activeSessions.get(socket.id);
+    if (!ctx || !['always_on', 'wake_per_turn'].includes(mode)) return;
+    // Limpiar turno activo al cambiar de modo
+    clearTimeout(ctx._turnTimer);
+    ctx.listeningForTurn = false;
+    ctx.turnBuffer       = '';
+    ctx.conversationMode = mode;
+    socket.emit('conversation_mode_changed', { mode });
+    console.log(`🔀 [Mode] ${mode} — ${ctx.patient?.name}`);
   });
 
   const statsInterval = setInterval(() => {
@@ -638,12 +760,14 @@ io.on('connection', socket => {
     try {
       socket.emit('server_stats', {
         activeConnections:  activeSessions.size,
-        chunksReceived:     ctx?.chunksReceived   || 0,
-        duration:           ctx?.firstChunkTime   ? Date.now() - ctx.firstChunkTime : 0,
-        isRecording:        ctx?.isRecording      || false,
+        chunksReceived:     ctx?.chunksReceived    || 0,
+        duration:           ctx?.firstChunkTime    ? Date.now() - ctx.firstChunkTime : 0,
+        isRecording:        ctx?.isRecording       || false,
         conversationActive: ctx?.conversationActive || false,
         testActive:         !!(ctx?.activeRunner),
-        patientName:        ctx?.patient?.name    || null
+        patientName:        ctx?.patient?.name     || null,
+        conversationMode:   ctx?.conversationMode  || 'always_on',
+        listeningForTurn:   ctx?.listeningForTurn  || false,
       });
     } catch {}
   }, 2000);
