@@ -427,7 +427,7 @@
 /* ─────────────────────────────────────────────────────────────────────────
    STATE
 ───────────────────────────────────────────────────────────────────────── */
-let socket, audioContext, analyser, stream, animId;
+let socket, audioContext, analyser, stream, animId, workletNode;
 let isRecording      = false;
 let aiParagraph      = null, aiBuffer = '';
 let currentPatientId = null;
@@ -608,8 +608,43 @@ function switchPatient(id) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
-   RECORDING
+   RECORDING — AudioWorklet (hilo de audio dedicado, sin ScriptProcessor)
+   El worklet corre en un thread separado del hilo principal, eliminando
+   los glitches que ocurrían cuando Socket.IO saturaba el hilo principal.
+   Envía ArrayBuffer binario en lugar de Array.from() JSON (~3.5x menos datos).
 ───────────────────────────────────────────────────────────────────────── */
+
+// Código del AudioWorkletProcessor definido como string para cargarlo
+// como Blob URL (evita necesidad de un archivo .js separado).
+const WORKLET_CODE = `
+class PcmCapture extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this._buf = [];
+    // Acumular 3200 muestras = 200ms a 16kHz antes de enviar al hilo principal.
+    // Tamaño óptimo para Vosk: suficiente contexto sin latencia excesiva.
+    this._target = 3200;
+  }
+  process(inputs) {
+    const ch = inputs[0]?.[0];
+    if (!ch) return true;
+    for (let i = 0; i < ch.length; i++) this._buf.push(ch[i]);
+    while (this._buf.length >= this._target) {
+      const chunk = this._buf.splice(0, this._target);
+      const i16 = new Int16Array(this._target);
+      for (let i = 0; i < this._target; i++) {
+        const s = Math.max(-1, Math.min(1, chunk[i]));
+        i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+      // Transferir el ArrayBuffer (zero-copy) al hilo principal
+      this.port.postMessage(i16.buffer, [i16.buffer]);
+    }
+    return true; // mantener el worklet vivo
+  }
+}
+registerProcessor('pcm-capture', PcmCapture);
+`;
+
 async function startRecording() {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -617,6 +652,13 @@ async function startRecording() {
       video:false
     });
     audioContext = new AudioContext({sampleRate:16000});
+
+    // Verificar sample rate real (algunos browsers ignoran la constraint)
+    if (audioContext.sampleRate !== 16000) {
+      console.warn(`[Audio] AudioContext a ${audioContext.sampleRate}Hz en lugar de 16000Hz — STT puede degradarse`);
+      toast(`Advertencia: audio a ${audioContext.sampleRate}Hz (se esperaba 16000Hz)`, 'warn');
+    }
+
     const src = audioContext.createMediaStreamSource(stream);
 
     // Filtro highpass: elimina ruido subgrave < 80Hz (ventilación, golpes, AC)
@@ -631,14 +673,23 @@ async function startRecording() {
     lpf.connect(analyser);
     const cv=document.getElementById('viz'); cv.width=cv.offsetWidth; cv.height=cv.offsetHeight;
     drawViz();
-    const proc = audioContext.createScriptProcessor(4096,1,1);
-    lpf.connect(proc); proc.connect(audioContext.destination);
-    proc.onaudioprocess = e => {
-      if(!isRecording||!socket?.connected) return;
-      const inp=e.inputBuffer.getChannelData(0), pcm=new Int16Array(inp.length);
-      for(let i=0;i<inp.length;i++){const s=Math.max(-1,Math.min(1,inp[i]));pcm[i]=s<0?s*0x8000:s*0x7fff;}
-      socket.emit('audio_chunk',{chunk:Array.from(pcm)});
+
+    // Registrar el worklet desde un Blob URL y conectarlo al grafo de audio
+    const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
+    const blobUrl = URL.createObjectURL(blob);
+    await audioContext.audioWorklet.addModule(blobUrl);
+    URL.revokeObjectURL(blobUrl);
+
+    workletNode = new AudioWorkletNode(audioContext, 'pcm-capture');
+    // El worklet no se conecta al destination: no hay playback del micrófono
+    lpf.connect(workletNode);
+
+    // Recibir chunks PCM16 como ArrayBuffer y enviarlos al servidor en binario
+    workletNode.port.onmessage = e => {
+      if (!isRecording || !socket?.connected) return;
+      socket.emit('audio_chunk', { chunk: e.data });
     };
+
     isRecording=true;
     document.getElementById('startBtn').disabled=true;
     document.getElementById('stopBtn').disabled=false;
@@ -648,8 +699,12 @@ async function startRecording() {
 }
 
 function stopRecording() {
+  workletNode?.port && (workletNode.port.onmessage = null);
+  workletNode?.disconnect();
+  workletNode = null;
   stream?.getTracks().forEach(t=>t.stop());
   audioContext?.close();
+  audioContext = null;
   if(animId) cancelAnimationFrame(animId);
   if(socket){socket.emit('stop_recording');socket.emit('get_final_transcription');}
   isRecording=false;

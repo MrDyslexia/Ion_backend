@@ -1,0 +1,1319 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Informe Técnico — Sistema ALMA v2.1.0</title>
+<style>
+  :root {
+    --navy: #1a2744;
+    --navy-light: #243258;
+    --accent: #2563eb;
+    --accent-light: #3b82f6;
+    --green: #16a34a;
+    --yellow: #ca8a04;
+    --red: #dc2626;
+    --gray-50: #f8fafc;
+    --gray-100: #f1f5f9;
+    --gray-200: #e2e8f0;
+    --gray-300: #cbd5e1;
+    --gray-600: #475569;
+    --gray-700: #334155;
+    --gray-800: #1e293b;
+    --text: #1e293b;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text);
+    background: #fff;
+  }
+
+  /* ── COVER ── */
+  .cover {
+    background: linear-gradient(135deg, var(--navy) 0%, var(--navy-light) 60%, #1e3a6e 100%);
+    color: #fff;
+    padding: 72px 64px 56px;
+    min-height: 280px;
+  }
+  .cover-badge {
+    display: inline-block;
+    background: var(--accent);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    padding: 4px 12px;
+    border-radius: 3px;
+    margin-bottom: 24px;
+  }
+  .cover h1 {
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    margin-bottom: 6px;
+  }
+  .cover h2 {
+    font-size: 16px;
+    font-weight: 400;
+    color: #93c5fd;
+    margin-bottom: 36px;
+  }
+  .cover-meta {
+    display: grid;
+    grid-template-columns: repeat(4, auto);
+    gap: 32px;
+    border-top: 1px solid rgba(255,255,255,0.15);
+    padding-top: 24px;
+  }
+  .cover-meta dt { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #93c5fd; margin-bottom: 2px; }
+  .cover-meta dd { font-size: 14px; font-weight: 600; }
+
+  /* ── LAYOUT ── */
+  .content { padding: 32px 64px; max-width: 960px; margin: 0 auto; }
+
+  /* ── SECTION HEADERS ── */
+  .section-header {
+    background: var(--navy);
+    color: #fff;
+    padding: 12px 20px;
+    border-radius: 6px 6px 0 0;
+    font-size: 15px;
+    font-weight: 700;
+    margin-top: 40px;
+    margin-bottom: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-header .num {
+    background: var(--accent);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 800;
+    padding: 2px 8px;
+    border-radius: 3px;
+  }
+  .section-body {
+    border: 1px solid var(--gray-200);
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    padding: 24px;
+    background: #fff;
+    margin-bottom: 8px;
+  }
+
+  h3 { font-size: 14px; font-weight: 700; color: var(--navy); margin: 20px 0 10px; border-left: 3px solid var(--accent); padding-left: 10px; }
+  h4 { font-size: 13px; font-weight: 700; color: var(--gray-700); margin: 14px 0 8px; }
+
+  p { margin-bottom: 10px; }
+
+  /* ── TABLES ── */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 12px 0; }
+  th { background: var(--navy); color: #fff; padding: 8px 10px; text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  td { padding: 7px 10px; border-bottom: 1px solid var(--gray-200); vertical-align: top; }
+  tr:nth-child(even) td { background: var(--gray-50); }
+  tr:hover td { background: #eff6ff; }
+
+  /* ── CODE ── */
+  pre, code {
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 11.5px;
+  }
+  pre {
+    background: var(--gray-800);
+    color: #e2e8f0;
+    padding: 16px 18px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 12px 0;
+    line-height: 1.5;
+  }
+  code {
+    background: var(--gray-100);
+    color: var(--navy);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
+  pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
+
+  /* ── BADGES ── */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700; }
+  .badge-green { background: #dcfce7; color: var(--green); }
+  .badge-yellow { background: #fef9c3; color: var(--yellow); }
+  .badge-red { background: #fee2e2; color: var(--red); }
+  .badge-blue { background: #dbeafe; color: var(--accent); }
+
+  /* ── SVG CONTAINER ── */
+  .diagram {
+    margin: 20px 0;
+    background: var(--gray-50);
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+  }
+  .diagram-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--gray-600);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+    text-align: left;
+  }
+  svg { display: block; margin: 0 auto; }
+
+  /* ── CALLOUT ── */
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: #eff6ff;
+    padding: 12px 16px;
+    border-radius: 0 6px 6px 0;
+    margin: 14px 0;
+    font-size: 12px;
+  }
+  .callout.warning { border-color: var(--yellow); background: #fefce8; }
+  .callout.success { border-color: var(--green); background: #f0fdf4; }
+  .callout.danger  { border-color: var(--red);   background: #fff1f2; }
+
+  /* ── PAGE BREAKS ── */
+  .page-break { page-break-before: always; }
+
+  /* ── TOC ── */
+  .toc { columns: 2; gap: 32px; margin: 16px 0; }
+  .toc ol { padding-left: 18px; }
+  .toc li { margin-bottom: 4px; font-size: 12px; color: var(--accent); }
+
+  /* ── CHANGE LOG ── */
+  .change-item {
+    border: 1px solid var(--gray-200);
+    border-radius: 6px;
+    margin: 14px 0;
+    overflow: hidden;
+  }
+  .change-item-header {
+    background: var(--navy);
+    color: #fff;
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .change-item-body { padding: 14px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════ COVER -->
+<div class="cover">
+  <div class="cover-badge">Documento Técnico Interno</div>
+  <h1>INFORME TÉCNICO — SISTEMA ALMA</h1>
+  <h2>Asistente de Lenguaje para la Memoria y el Aprendizaje</h2>
+  <dl class="cover-meta">
+    <div><dt>Versión</dt><dd>2.1.0</dd></div>
+    <div><dt>Fecha</dt><dd>31 de marzo de 2026</dd></div>
+    <div><dt>Clasificación</dt><dd>Técnico Interno</dd></div>
+    <div><dt>Ámbito</dt><dd>Evaluación Cognitiva por Voz</dd></div>
+  </dl>
+</div>
+
+<div class="content">
+
+<!-- ══════════════════════════════════════════════════════════════ TOC -->
+<div class="section-header"><span class="num">TOC</span>Tabla de Contenidos</div>
+<div class="section-body">
+  <div class="toc">
+    <ol>
+      <li>Descripción General del Proyecto</li>
+      <li>Arquitectura del Sistema</li>
+      <li>Requisitos del Sistema</li>
+      <li>Módulos y Componentes</li>
+      <li>Flujos de Funcionamiento</li>
+      <li>Modelo de Datos</li>
+      <li>API REST</li>
+      <li>Eventos Socket.IO</li>
+      <li>Test 6CIT — Protocolo de Evaluación</li>
+      <li>Algoritmos de Puntuación</li>
+      <li>Pipeline de Procesamiento de Audio</li>
+      <li>Gestión de Contexto LLM</li>
+      <li>Seguridad y Robustez</li>
+      <li>Configuración y Despliegue</li>
+      <li>Cambios v2.1.0</li>
+      <li>Glosario Técnico</li>
+    </ol>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S1 -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">1</span>Descripción General del Proyecto</div>
+<div class="section-body">
+  <h3>1.1 ¿Qué es ALMA?</h3>
+  <p><strong>ALMA</strong> (Asistente de Lenguaje para la Memoria y el Aprendizaje) es un sistema de evaluación cognitiva por voz diseñado para administrar el <strong>Test 6CIT (Six-item Cognitive Impairment Test)</strong> a pacientes de la tercera edad mediante conversación natural en español. Todo el procesamiento de inteligencia artificial corre localmente, sin ninguna dependencia de servicios en la nube.</p>
+
+  <h3>1.2 Stack Tecnológico</h3>
+  <table>
+    <thead><tr><th>Capa</th><th>Tecnología</th><th>Rol</th></tr></thead>
+    <tbody>
+      <tr><td>Frontend</td><td>HTML5, AudioWorklet, Socket.IO Client</td><td>Captura de audio PCM16, interfaz de chat</td></tr>
+      <tr><td>Backend</td><td>Node.js 20+, Express 5.x, Socket.IO 4.x</td><td>Servidor principal, orquestación</td></tr>
+      <tr><td>STT</td><td>Vosk (modelo español ~1.8 GB)</td><td>Reconocimiento de voz offline</td></tr>
+      <tr><td>LLM</td><td>Ollama + Qwen2.5:7b</td><td>Conversación natural y tool calling</td></tr>
+      <tr><td>TTS</td><td>XTTS-v2 vía FastAPI</td><td>Síntesis de voz con acento latinoamericano</td></tr>
+      <tr><td>Búsqueda</td><td>SearXNG (Podman)</td><td>Meta-búsqueda web autoalojada</td></tr>
+      <tr><td>Base de datos</td><td>sql.js (SQLite WASM)</td><td>Persistencia clínica local</td></tr>
+    </tbody>
+  </table>
+
+  <h3>1.3 Objetivos del Sistema</h3>
+  <table>
+    <thead><tr><th>Objetivo</th><th>Descripción</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Evaluación no invasiva</strong></td><td>Administrar el 6CIT de forma conversacional y empática</td></tr>
+      <tr><td><strong>100% Local</strong></td><td>Sin dependencias de nube: STT, LLM y TTS en la misma red</td></tr>
+      <tr><td><strong>Precisión clínica</strong></td><td>Implementar fielmente el protocolo Kingshill 2000 del 6CIT</td></tr>
+      <tr><td><strong>Robustez</strong></td><td>Manejar ruido, respuestas ambiguas, cancelaciones y errores de red</td></tr>
+      <tr><td><strong>Trazabilidad</strong></td><td>Registrar cada sesión, mensaje y evaluación en base de datos</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S2 -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">2</span>Arquitectura del Sistema</div>
+<div class="section-body">
+  <h3>2.1 Diagrama de Arquitectura General</h3>
+  <div class="diagram">
+    <div class="diagram-title">Figura 1 — Arquitectura de alto nivel del Sistema ALMA</div>
+    <svg width="820" height="520" viewBox="0 0 820 520" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#475569"/></marker>
+        <marker id="arr-w" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#fff"/></marker>
+        <marker id="arr-b" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#2563eb"/></marker>
+      </defs>
+
+      <!-- Client zone -->
+      <rect x="20" y="20" width="780" height="110" rx="8" fill="#f0f9ff" stroke="#bae6fd" stroke-width="2"/>
+      <text x="410" y="42" text-anchor="middle" font-size="11" font-weight="700" fill="#0369a1" font-family="Arial">CLIENTE (Navegador Web)</text>
+
+      <rect x="40" y="54" width="140" height="60" rx="6" fill="#1a2744" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="110" y="80" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="Arial">AudioWorklet</text>
+      <text x="110" y="96" text-anchor="middle" font-size="10" fill="#93c5fd" font-family="Arial">Float32→PCM16</text>
+      <text x="110" y="109" text-anchor="middle" font-size="10" fill="#93c5fd" font-family="Arial">16kHz mono</text>
+
+      <rect x="220" y="54" width="140" height="60" rx="6" fill="#1a2744" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="290" y="80" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="Arial">Socket.IO Client</text>
+      <text x="290" y="96" text-anchor="middle" font-size="10" fill="#93c5fd" font-family="Arial">audio_chunk</text>
+      <text x="290" y="109" text-anchor="middle" font-size="10" fill="#93c5fd" font-family="Arial">tts_audio / text</text>
+
+      <rect x="400" y="54" width="140" height="60" rx="6" fill="#1a2744" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="470" y="80" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="Arial">UI / Chat</text>
+      <text x="470" y="96" text-anchor="middle" font-size="10" fill="#93c5fd" font-family="Arial">Waveform</text>
+      <text x="470" y="109" text-anchor="middle" font-size="10" fill="#93c5fd" font-family="Arial">Stats / Controls</text>
+
+      <!-- Arrows client internal -->
+      <line x1="180" y1="84" x2="218" y2="84" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="360" y1="84" x2="398" y2="84" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+
+      <!-- WebSocket label -->
+      <line x1="290" y1="114" x2="290" y2="155" stroke="#2563eb" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#arr-b)"/>
+      <line x1="290" y1="155" x2="290" y2="114" stroke="#2563eb" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#arr-b)"/>
+      <text x="300" y="140" font-size="10" fill="#2563eb" font-family="Arial" font-style="italic">WebSocket</text>
+
+      <!-- Server zone -->
+      <rect x="20" y="160" width="780" height="340" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+      <text x="410" y="182" text-anchor="middle" font-size="11" font-weight="700" fill="#1a2744" font-family="Arial">SERVIDOR ALMA (Node.js / Express)</text>
+
+      <!-- SessionContext -->
+      <rect x="40" y="192" width="740" height="44" rx="5" fill="#1a2744" stroke="#2563eb" stroke-width="1"/>
+      <text x="410" y="210" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="Arial">SessionContext</text>
+      <text x="410" y="227" text-anchor="middle" font-size="10" fill="#93c5fd" font-family="Arial">socket | patient | sessionId | dialog | conversationActive | activeRunner | testDoneThisSession | conversationMode</text>
+
+      <!-- Vosk -->
+      <rect x="40" y="254" width="130" height="70" rx="5" fill="#fff" stroke="#16a34a" stroke-width="2"/>
+      <text x="105" y="276" text-anchor="middle" font-size="11" font-weight="700" fill="#16a34a" font-family="Arial">Vosk STT</text>
+      <text x="105" y="292" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">Offline Español</text>
+      <text x="105" y="307" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">16kHz mono</text>
+      <text x="105" y="322" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">~1.8 GB model</text>
+
+      <!-- isConversationNoise -->
+      <rect x="190" y="254" width="140" height="70" rx="5" fill="#fff" stroke="#f59e0b" stroke-width="2"/>
+      <text x="260" y="274" text-anchor="middle" font-size="10" font-weight="700" fill="#b45309" font-family="Arial">isConversation</text>
+      <text x="260" y="287" text-anchor="middle" font-size="10" font-weight="700" fill="#b45309" font-family="Arial">Noise()</text>
+      <text x="260" y="304" text-anchor="middle" font-size="9" fill="#475569" font-family="Arial">Filtro inglés/ruido</text>
+      <text x="260" y="318" text-anchor="middle" font-size="9" fill="#475569" font-family="Arial">Nuevo v2.1.0</text>
+
+      <!-- askLLM -->
+      <rect x="350" y="254" width="140" height="70" rx="5" fill="#fff" stroke="#2563eb" stroke-width="2"/>
+      <text x="420" y="276" text-anchor="middle" font-size="11" font-weight="700" fill="#1a2744" font-family="Arial">askLLM()</text>
+      <text x="420" y="292" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">Ollama API</text>
+      <text x="420" y="307" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">Qwen2.5:7b</text>
+      <text x="420" y="322" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">Streaming JSON</text>
+
+      <!-- TestRunner -->
+      <rect x="510" y="254" width="130" height="70" rx="5" fill="#fff" stroke="#7c3aed" stroke-width="2"/>
+      <text x="575" y="276" text-anchor="middle" font-size="11" font-weight="700" fill="#7c3aed" font-family="Arial">TestRunner</text>
+      <text x="575" y="292" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">IDLE / WAITING</text>
+      <text x="575" y="307" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">_RESPONSE /</text>
+      <text x="575" y="322" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">WAITING_CONFIRM</text>
+
+      <!-- ResponseValidator -->
+      <rect x="350" y="344" width="140" height="60" rx="5" fill="#fff" stroke="#db2777" stroke-width="2"/>
+      <text x="420" y="365" text-anchor="middle" font-size="11" font-weight="700" fill="#db2777" font-family="Arial">ResponseValidator</text>
+      <text x="420" y="381" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">LLM + Heurísticas</text>
+      <text x="420" y="396" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">Bypass patterns</text>
+
+      <!-- Scorer -->
+      <rect x="510" y="344" width="130" height="60" rx="5" fill="#fff" stroke="#16a34a" stroke-width="2"/>
+      <text x="575" y="365" text-anchor="middle" font-size="11" font-weight="700" fill="#16a34a" font-family="Arial">Scorer 6CIT</text>
+      <text x="575" y="381" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">binary/time/</text>
+      <text x="575" y="396" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">partial/address</text>
+
+      <!-- External services row -->
+      <rect x="40" y="424" width="100" height="56" rx="5" fill="#1a2744" stroke="#475569" stroke-width="1.5"/>
+      <text x="90" y="447" text-anchor="middle" font-size="10" font-weight="700" fill="#fff" font-family="Arial">XTTS-v2</text>
+      <text x="90" y="462" text-anchor="middle" font-size="9" fill="#93c5fd" font-family="Arial">FastAPI TTS</text>
+      <text x="90" y="475" text-anchor="middle" font-size="9" fill="#93c5fd" font-family="Arial">WAV chunks</text>
+
+      <rect x="160" y="424" width="100" height="56" rx="5" fill="#1a2744" stroke="#475569" stroke-width="1.5"/>
+      <text x="210" y="447" text-anchor="middle" font-size="10" font-weight="700" fill="#fff" font-family="Arial">SearXNG</text>
+      <text x="210" y="462" text-anchor="middle" font-size="9" fill="#93c5fd" font-family="Arial">Meta-search</text>
+      <text x="210" y="475" text-anchor="middle" font-size="9" fill="#93c5fd" font-family="Arial">Podman local</text>
+
+      <rect x="280" y="424" width="100" height="56" rx="5" fill="#1a2744" stroke="#475569" stroke-width="1.5"/>
+      <text x="330" y="447" text-anchor="middle" font-size="10" font-weight="700" fill="#fff" font-family="Arial">sql.js</text>
+      <text x="330" y="462" text-anchor="middle" font-size="9" fill="#93c5fd" font-family="Arial">SQLite WASM</text>
+      <text x="330" y="475" text-anchor="middle" font-size="9" fill="#93c5fd" font-family="Arial">alma.db</text>
+
+      <rect x="400" y="424" width="100" height="56" rx="5" fill="#1a2744" stroke="#475569" stroke-width="1.5"/>
+      <text x="450" y="447" text-anchor="middle" font-size="10" font-weight="700" fill="#fff" font-family="Arial">Ollama</text>
+      <text x="450" y="462" text-anchor="middle" font-size="9" fill="#93c5fd" font-family="Arial">LLM Runtime</text>
+      <text x="450" y="475" text-anchor="middle" font-size="9" fill="#93c5fd" font-family="Arial">Qwen2.5:7b</text>
+
+      <!-- Arrows in server -->
+      <line x1="170" y1="289" x2="188" y2="289" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="330" y1="289" x2="348" y2="289" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="490" y1="289" x2="508" y2="289" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="575" y1="324" x2="575" y2="342" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="510" y1="374" x2="492" y2="374" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="420" y1="404" x2="330" y2="422" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="420" y1="404" x2="450" y2="422" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="420" y1="404" x2="90" y2="422" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+    </svg>
+  </div>
+
+  <h3>2.2 Separación de Responsabilidades</h3>
+  <table>
+    <thead><tr><th>Capa</th><th>Componente</th><th>Responsabilidad</th></tr></thead>
+    <tbody>
+      <tr><td>Presentación</td><td><code>public/index.html</code></td><td>Captura audio, muestra respuestas, controles UI</td></tr>
+      <tr><td>Transporte</td><td>Socket.IO</td><td>Comunicación tiempo real bidireccional</td></tr>
+      <tr><td>Orquestación</td><td><code>server.js</code></td><td>Gestión de sesiones, routing de audio/voz, LLM</td></tr>
+      <tr><td>Filtro STT</td><td><code>isConversationNoise()</code></td><td>Descarta ruido/inglés antes de llamar al LLM</td></tr>
+      <tr><td>Test Engine</td><td><code>TestRunner.js</code></td><td>Máquina de estados de pregunta-respuesta</td></tr>
+      <tr><td>Validación</td><td><code>ResponseValidator.js</code></td><td>Clasificación semántica de respuestas</td></tr>
+      <tr><td>Puntuación</td><td><code>scorer.js</code></td><td>Cálculo de puntaje 6CIT</td></tr>
+      <tr><td>Síntesis</td><td><code>ttsHelper.js</code></td><td>Normalización texto y síntesis de voz</td></tr>
+      <tr><td>Persistencia</td><td><code>db.js</code></td><td>CRUD sobre SQLite via sql.js</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S3 -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">3</span>Requisitos del Sistema</div>
+<div class="section-body">
+  <h3>3.1 Requisitos Funcionales</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Requisito</th><th>Módulo</th></tr></thead>
+    <tbody>
+      <tr><td>RF-01</td><td>Identificar al paciente por código antes de la sesión</td><td><code>server.js → /identify</code></td></tr>
+      <tr><td>RF-02</td><td>Reconocer voz en español de forma offline</td><td>Vosk STT</td></tr>
+      <tr><td>RF-03</td><td>Conversar de forma natural con el paciente</td><td><code>askLLM()</code> + Ollama</td></tr>
+      <tr><td>RF-04</td><td>Administrar el test 6CIT completo (7 preguntas)</td><td>TestRunner + 6cit/index.js</td></tr>
+      <tr><td>RF-05</td><td>Validar respuestas del paciente usando IA</td><td>ResponseValidator.js</td></tr>
+      <tr><td>RF-06</td><td>Calcular y registrar el puntaje 6CIT</td><td>scorer.js + evaluationOps.save()</td></tr>
+      <tr><td>RF-07</td><td>Interpretar el nivel cognitivo del puntaje</td><td><code>interpretScore()</code></td></tr>
+      <tr><td>RF-08</td><td>Sintetizar voz en español</td><td>ttsHelper.js + XTTS-v2</td></tr>
+      <tr><td>RF-09</td><td>Buscar información en internet si el paciente lo solicita</td><td>searchWeb() + SearXNG</td></tr>
+      <tr><td>RF-10</td><td>Permitir solo una evaluación por día por paciente</td><td><code>evaluationOps.hasTestToday()</code></td></tr>
+      <tr><td>RF-11</td><td>Manejar cancelaciones del test con confirmación</td><td>CancelledError + isCancelIntent()</td></tr>
+      <tr><td>RF-12</td><td>Comprimir historial de conversación para gestionar contexto</td><td><code>compressContext()</code></td></tr>
+      <tr><td>RF-13</td><td>Detectar intentos manuales del LLM de hacer el test</td><td><code>looksLikeManualTest()</code></td></tr>
+      <tr><td><span class="badge badge-blue">NEW</span> RF-14</td><td>Filtrar ruido STT antes de invocar el LLM</td><td><code>isConversationNoise()</code></td></tr>
+      <tr><td><span class="badge badge-blue">NEW</span> RF-15</td><td>Descartar ecos y rellenos en el buffer pre-armado</td><td><code>TestRunner._waitSingle/_waitVAD</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>3.2 Requisitos No Funcionales</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Requisito</th><th>Valor</th></tr></thead>
+    <tbody>
+      <tr><td>RNF-01</td><td>Latencia primer token LLM</td><td>&lt; 3 segundos</td></tr>
+      <tr><td>RNF-02</td><td>Timeout espera respuesta corta</td><td>40 segundos</td></tr>
+      <tr><td>RNF-03</td><td>Timeout espera respuesta larga</td><td>60 segundos</td></tr>
+      <tr><td>RNF-04</td><td>Umbral RMS Noise Gate</td><td>150 / 32767</td></tr>
+      <tr><td>RNF-05</td><td>Umbral RMS VAD</td><td>800 / 32767</td></tr>
+      <tr><td>RNF-06</td><td>Silencio VAD para fin de habla</td><td>1800 ms (default)</td></tr>
+      <tr><td>RNF-07</td><td>Frecuencia de muestreo audio</td><td>16.000 Hz, mono, PCM16</td></tr>
+      <tr><td>RNF-08</td><td>Cooldown compresión de contexto</td><td>60 segundos</td></tr>
+      <tr><td>RNF-09</td><td>Umbral de mensajes para compresión</td><td>20 mensajes</td></tr>
+      <tr><td>RNF-10</td><td>Máximo iteraciones LLM por turno</td><td>3 tool calls</td></tr>
+      <tr><td>RNF-11</td><td>Persistencia base de datos</td><td>Debounce 2s + flush inmediato en evaluaciones</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S4 -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">4</span>Módulos y Componentes</div>
+<div class="section-body">
+  <h3>4.1 Tamaño de Módulos (v2.1.0)</h3>
+  <table>
+    <thead><tr><th>Archivo</th><th>Líneas v2.0.0</th><th>Líneas v2.1.0</th><th>Delta</th><th>Rol</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/server.js</code></td><td>996</td><td>1023</td><td>+27</td><td>Servidor principal, SessionContext, askLLM</td></tr>
+      <tr><td><code>engine/TestRunner.js</code></td><td>480</td><td>503</td><td>+23</td><td>Máquina de estados del test</td></tr>
+      <tr><td><code>engine/ResponseValidator.js</code></td><td>280</td><td>280</td><td>0</td><td>Validador híbrido LLM+heurístico</td></tr>
+      <tr><td><code>engine/ttsHelper.js</code></td><td>105</td><td>104</td><td>-1</td><td>Normalización y síntesis de voz</td></tr>
+      <tr><td><code>src/db.js</code></td><td>347</td><td>346</td><td>-1</td><td>ORM SQLite WASM</td></tr>
+    </tbody>
+  </table>
+
+  <h3>4.2 Clase SessionContext</h3>
+  <pre>SessionContext {
+  socket            → Referencia al socket Socket.IO
+  patient           → { id, name, age, clinical_notes }
+  sessionId         → UUID de la sesión en BD
+  dialog            → Array de mensajes para el LLM
+
+  [Audio/STT]
+  ├── voskRec         → Instancia del reconocedor Vosk
+  ├── isRecording     → boolean
+  ├── userBuffer      → Buffer STT pre-activación
+  └── lastPartial     → Cache para evitar duplicados parciales
+
+  [Estado Conversación]
+  ├── conversationActive  → ¿Iniciada con "Hola ALMA"?
+  ├── conversationMode    → 'always_on' | 'wake_per_turn'
+  ├── listeningForTurn    → turno activo (wake_per_turn)
+  ├── turnBuffer          → Acumulador STT del turno
+  └── _turnTimer          → Timer de silencio para cerrar turno
+
+  [Estado Test]
+  ├── activeRunner        → TestRunner activo (null si no hay test)
+  ├── _testJustStarted    → Suprime TTS del LLM
+  ├── testDoneThisSession → Bloquea re-test en la sesión
+  └── _byeCooldown        → Bloquea STT tras despedida
+
+  [VAD]
+  ├── vadEnabled, vadIsSpeaking
+  ├── vadSilenceMs, vadSpeechThreshold
+  └── vadSilenceTimer
+}</pre>
+
+  <h3>4.3 Pipeline askLLM()</h3>
+  <pre>1. Emitir estado 'thinking'
+2. Loop (máx 3 iteraciones):
+   a. POST a Ollama /api/chat (streaming)
+   b. Parsear JSON line-by-line → emitir deltas al cliente
+   c. Si hay tool_call → dispatchToolCall() → continuar
+   d. Si hay respuesta texto → verificar looksLikeManualTest()
+   e. Salir del loop
+3. Persistir mensaje asistente en BD
+4. Emitir 'assistant_text_done'
+5. ¿Superar umbral compresión? → compressContext() (async)
+6. ¿TTS no suprimido? → synthesizeSpeech() (async background)
+7. Retornar fullResponse</pre>
+
+  <h3>4.4 TestRunner — Buffer Pre-Armado (v2.1.0)</h3>
+  <p>El campo <code>_lastAcceptedText</code> (nuevo en v2.1.0) permite al flush del buffer descartar respuestas espurias:</p>
+  <table>
+    <thead><tr><th>Condición de descarte</th><th>Función de detección</th></tr></thead>
+    <tbody>
+      <tr><td>Relleno de voz ("uh", "mm", "ah"...)</td><td><code>isFiller(buffered, 'single')</code></td></tr>
+      <tr><td>Eco de la pregunta actual</td><td><code>isQuestionEcho(buffered, this._currentQuestion)</code></td></tr>
+      <tr><td>Duplicado de última respuesta aceptada</td><td><code>normalize(buffered) === this._lastAcceptedText</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S5 -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">5</span>Flujos de Funcionamiento</div>
+<div class="section-body">
+  <h3>5.1 Flujo de Conversación (modo always_on)</h3>
+  <pre>PACIENTE        CLIENTE          SERVIDOR              LLM
+  │                │                │                    │
+  │ "Hola ALMA"    │                │                    │
+  ├──voz───────────▶│               │                    │
+  │            AudioWorklet→PCM16  │                    │
+  │                ├──audio_chunk──▶│                   │
+  │                │               ├─ Vosk STT → "hola alma"
+  │                │               ├─ isConversationNoise() → false
+  │                │               ├─ processVoiceCommands() → 'start_conversation'
+  │                │               ├─ askLLM() ─────────────▶│
+  │                │◀──assistant_text (streaming) ────────────┤
+  │                │◀──tts_audio────┤◀── XTTS-v2 WAV ─────────┘
+  │◀── audio ──────┤               │</pre>
+
+  <h3>5.2 Flujo del Test 6CIT</h3>
+  <pre>PACIENTE         CLIENTE         SERVIDOR          LLM        TestRunner
+  │               │                │               │               │
+  │ "Sí quiero la prueba"          │               │               │
+  ├──voz──────────▶│               │               │               │
+  │               ├──audio_chunk──▶│               │               │
+  │               │                ├─ STT → askLLM() ─────────────▶│
+  │               │                │               ├─ tool_call: conduct_test
+  │               │                ├─ dispatchToolCall() ──────────▶│
+  │               │                │               │         new TestRunner(ctx)
+  │               │◀──tts_audio────┤               │         "Iniciamos evaluación..."
+  │               │                │               │               │
+  │               │                │               │    [PREGUNTA 1: ¿En qué año?]
+  │               │◀──tts_audio────┤               │    state → WAITING_RESPONSE
+  │ "Dos mil veintiséis"           │               │               │
+  ├──voz──────────▶│               │               │               │
+  │               │                ├─ STT→resolveSTT("2026")       │
+  │               │                │               │  ResponseValidator → valid
+  │               │                │               │  scoreAnswer() → 0 pts
+  │               │                │               │    [preguntas 2-7...]
+  │               │                │               │    evaluationOps.save()
+  │               │◀──test_finished─┤              │               │</pre>
+
+  <h3>5.3 Flujo de Cancelación</h3>
+  <pre>PACIENTE       TestRunner       ResponseValidator     SERVIDOR
+  │                │                   │                   │
+  │ "Quiero parar" │                   │                   │
+  ├──voz───────────▶│                  │                   │
+  │         resolveSTT("quiero parar") │                   │
+  │                ├─ isCancelIntent()─▶│                  │
+  │                │                   ├─ → true           │
+  │                │  state → WAITING_CONFIRM              │
+  │                ├─ say("¿Desea detener la evaluación?") │
+  │ "Sí"           │                   │                   │
+  ├──voz───────────▶│                  │                   │
+  │                ├─ throw CancelledError                 │
+  │                │                   │        catch CancelledError
+  │                │                   │        status='cancelled'
+  │                │                   │        evaluationOps.save()</pre>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S6 -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">6</span>Modelo de Datos</div>
+<div class="section-body">
+  <h3>6.1 Diagrama Entidad-Relación</h3>
+  <div class="diagram">
+    <div class="diagram-title">Figura 2 — Esquema de base de datos SQLite (alma.db)</div>
+    <svg width="780" height="380" viewBox="0 0 780 380" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#475569"/></marker>
+      </defs>
+
+      <!-- patients -->
+      <rect x="30" y="40" width="180" height="160" rx="6" fill="#fff" stroke="#1a2744" stroke-width="2"/>
+      <rect x="30" y="40" width="180" height="30" rx="6" fill="#1a2744"/>
+      <rect x="30" y="58" width="180" height="12" fill="#1a2744"/>
+      <text x="120" y="60" text-anchor="middle" font-size="12" font-weight="700" fill="#fff" font-family="Arial">patients</text>
+      <line x1="30" y1="70" x2="210" y2="70" stroke="#e2e8f0" stroke-width="1"/>
+      <text x="44" y="88" font-size="11" fill="#1a2744" font-family="Arial"><tspan font-weight="700">PK</tspan> id TEXT</text>
+      <text x="44" y="105" font-size="11" fill="#475569" font-family="Arial">name TEXT</text>
+      <text x="44" y="120" font-size="11" fill="#475569" font-family="Arial">age INTEGER</text>
+      <text x="44" y="135" font-size="11" fill="#475569" font-family="Arial">clinical_notes TEXT</text>
+      <text x="44" y="150" font-size="11" fill="#475569" font-family="Arial">created_at INTEGER</text>
+      <text x="44" y="165" font-size="11" fill="#475569" font-family="Arial">updated_at INTEGER</text>
+
+      <!-- sessions -->
+      <rect x="300" y="20" width="200" height="200" rx="6" fill="#fff" stroke="#1a2744" stroke-width="2"/>
+      <rect x="300" y="20" width="200" height="30" rx="6" fill="#1a2744"/>
+      <rect x="300" y="38" width="200" height="12" fill="#1a2744"/>
+      <text x="400" y="40" text-anchor="middle" font-size="12" font-weight="700" fill="#fff" font-family="Arial">sessions</text>
+      <line x1="300" y1="50" x2="500" y2="50" stroke="#e2e8f0" stroke-width="1"/>
+      <text x="314" y="68" font-size="11" fill="#1a2744" font-family="Arial"><tspan font-weight="700">PK</tspan> id TEXT (UUID)</text>
+      <text x="314" y="83" font-size="11" fill="#2563eb" font-family="Arial"><tspan font-weight="700">FK</tspan> patient_id TEXT</text>
+      <text x="314" y="98" font-size="11" fill="#475569" font-family="Arial">socket_id TEXT</text>
+      <text x="314" y="113" font-size="11" fill="#475569" font-family="Arial">started_at INTEGER</text>
+      <text x="314" y="128" font-size="11" fill="#475569" font-family="Arial">ended_at INTEGER</text>
+      <text x="314" y="143" font-size="11" fill="#475569" font-family="Arial">evaluation_complete 0/1</text>
+      <text x="314" y="158" font-size="11" fill="#475569" font-family="Arial">summary TEXT</text>
+
+      <!-- messages -->
+      <rect x="30" y="240" width="200" height="130" rx="6" fill="#fff" stroke="#1a2744" stroke-width="2"/>
+      <rect x="30" y="240" width="200" height="30" rx="6" fill="#1a2744"/>
+      <rect x="30" y="258" width="200" height="12" fill="#1a2744"/>
+      <text x="130" y="260" text-anchor="middle" font-size="12" font-weight="700" fill="#fff" font-family="Arial">messages</text>
+      <line x1="30" y1="270" x2="230" y2="270" stroke="#e2e8f0" stroke-width="1"/>
+      <text x="44" y="288" font-size="11" fill="#1a2744" font-family="Arial"><tspan font-weight="700">PK</tspan> id INTEGER AUTOINCR</text>
+      <text x="44" y="303" font-size="11" fill="#2563eb" font-family="Arial"><tspan font-weight="700">FK</tspan> session_id TEXT</text>
+      <text x="44" y="318" font-size="11" fill="#475569" font-family="Arial">role TEXT</text>
+      <text x="44" y="333" font-size="11" fill="#475569" font-family="Arial">content TEXT</text>
+      <text x="44" y="348" font-size="11" fill="#475569" font-family="Arial">tool_calls TEXT (JSON)</text>
+
+      <!-- evaluations -->
+      <rect x="530" y="20" width="220" height="340" rx="6" fill="#fff" stroke="#1a2744" stroke-width="2"/>
+      <rect x="530" y="20" width="220" height="30" rx="6" fill="#1a2744"/>
+      <rect x="530" y="38" width="220" height="12" fill="#1a2744"/>
+      <text x="640" y="40" text-anchor="middle" font-size="12" font-weight="700" fill="#fff" font-family="Arial">evaluations</text>
+      <line x1="530" y1="50" x2="750" y2="50" stroke="#e2e8f0" stroke-width="1"/>
+      <text x="544" y="68" font-size="11" fill="#1a2744" font-family="Arial"><tspan font-weight="700">PK</tspan> id TEXT (UUID)</text>
+      <text x="544" y="83" font-size="11" fill="#2563eb" font-family="Arial"><tspan font-weight="700">FK</tspan> session_id TEXT</text>
+      <text x="544" y="98" font-size="11" fill="#2563eb" font-family="Arial"><tspan font-weight="700">FK</tspan> patient_id TEXT</text>
+      <text x="544" y="113" font-size="11" fill="#475569" font-family="Arial">test_id TEXT ('sixcit')</text>
+      <text x="544" y="128" font-size="11" fill="#475569" font-family="Arial">test_version TEXT</text>
+      <text x="544" y="143" font-size="11" fill="#475569" font-family="Arial">status TEXT</text>
+      <text x="544" y="158" font-size="11" fill="#475569" font-family="Arial">  completed/cancelled</text>
+      <text x="544" y="173" font-size="11" fill="#475569" font-family="Arial">started_at INTEGER</text>
+      <text x="544" y="188" font-size="11" fill="#475569" font-family="Arial">ended_at INTEGER</text>
+      <text x="544" y="203" font-size="11" fill="#475569" font-family="Arial">answers TEXT (JSON)</text>
+      <text x="544" y="218" font-size="11" fill="#475569" font-family="Arial">total_score INTEGER</text>
+      <text x="544" y="233" font-size="11" fill="#475569" font-family="Arial">max_score INTEGER (28)</text>
+      <text x="544" y="248" font-size="11" fill="#475569" font-family="Arial">interpretation_level</text>
+      <text x="544" y="263" font-size="11" fill="#475569" font-family="Arial">interpretation_label</text>
+      <text x="544" y="278" font-size="11" fill="#475569" font-family="Arial">cancelled_at_question</text>
+
+      <!-- Relationships -->
+      <line x1="210" y1="100" x2="298" y2="100" stroke="#475569" stroke-width="2" marker-end="url(#arr2)"/>
+      <text x="240" y="94" font-size="10" fill="#475569" font-family="Arial">1:N</text>
+
+      <line x1="400" y1="220" x2="400" y2="270" stroke="#475569" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <line x1="400" y1="270" x2="232" y2="270" stroke="#475569" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+      <line x1="500" y1="100" x2="528" y2="100" stroke="#475569" stroke-width="2" marker-end="url(#arr2)"/>
+      <text x="507" y="94" font-size="10" fill="#475569" font-family="Arial">1:N</text>
+    </svg>
+  </div>
+
+  <h3>6.2 Estructura del campo <code>answers</code> (JSON)</h3>
+  <pre>{
+  "year":             { "status":"answered", "text":"dos mil veintiséis", "score":0, "maxScore":4, "detail":"correcto" },
+  "month":            { "status":"answered", "text":"marzo", "score":0, "maxScore":3, "detail":"correcto" },
+  "address_register": { "status":"answered", "text":"Manuel Rodríguez 1373 Santiago", "score":0, "maxScore":0, "detail":"registro" },
+  "time":             { "status":"answered", "text":"las tres y media", "score":3, "maxScore":3, "detail":"diferencia_95min" },
+  "countdown":        { "status":"answered", "quality":"perfect", "score":0, "maxScore":4, "detail":"perfect" },
+  "months_reverse":   { "status":"answered", "quality":"one_error", "score":2, "maxScore":4, "detail":"one_error" },
+  "address_recall":   { "status":"answered", "score":2, "maxScore":10, "detail":"missed: 1373",
+                        "componentScores":{ "Manuel":"correcto","Rodriguez":"correcto","1373":"incorrecto","Santiago":"correcto" } }
+}</pre>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S7+8 -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">7</span>API REST</div>
+<div class="section-body">
+  <table>
+    <thead><tr><th>Método</th><th>Ruta</th><th>Descripción</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-blue">POST</span></td><td><code>/patients</code></td><td>Crear paciente</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/patients</code></td><td>Listar todos los pacientes</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/patients/:id</code></td><td>Obtener paciente con sesiones</td></tr>
+      <tr><td><span class="badge badge-yellow">PUT</span></td><td><code>/patients/:id</code></td><td>Actualizar paciente</td></tr>
+      <tr><td><span class="badge badge-red">DELETE</span></td><td><code>/patients/:id</code></td><td>Eliminar paciente</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/patients/:id/sessions</code></td><td>Sesiones del paciente</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/patients/:id/evals</code></td><td>Evaluaciones del paciente</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/sessions/:id/messages</code></td><td>Mensajes de la sesión</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/evals/:id</code></td><td>Evaluación específica con answers JSON</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/stats</code></td><td>Estado del servidor</td></tr>
+      <tr><td><span class="badge badge-green">GET</span></td><td><code>/test</code></td><td>Health check</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section-header"><span class="num">8</span>Eventos Socket.IO</div>
+<div class="section-body">
+  <h3>Cliente → Servidor</h3>
+  <table>
+    <thead><tr><th>Evento</th><th>Payload</th><th>Descripción</th></tr></thead>
+    <tbody>
+      <tr><td><code>identify</code></td><td><code>{ patientId }</code></td><td>Identificar paciente</td></tr>
+      <tr><td><code>start_recording</code></td><td><code>{}</code></td><td>Iniciar captura de audio</td></tr>
+      <tr><td><code>stop_recording</code></td><td><code>{}</code></td><td>Detener captura</td></tr>
+      <tr><td><code>audio_chunk</code></td><td><code>{ chunk: ArrayBuffer }</code></td><td>Enviar PCM16 16kHz</td></tr>
+      <tr><td><code>set_conversation_mode</code></td><td><code>{ mode }</code></td><td>Cambiar modo always_on / wake_per_turn</td></tr>
+    </tbody>
+  </table>
+  <h3>Servidor → Cliente</h3>
+  <table>
+    <thead><tr><th>Evento</th><th>Payload</th><th>Descripción</th></tr></thead>
+    <tbody>
+      <tr><td><code>identified</code></td><td><code>{ patientName, sessionId, isNewSession }</code></td><td>Sesión iniciada</td></tr>
+      <tr><td><code>assistant_text</code></td><td><code>{ delta }</code></td><td>Fragmento streaming LLM</td></tr>
+      <tr><td><code>tts_audio</code></td><td><code>{ audio: base64, mimeType }</code></td><td>Chunk WAV del asistente</td></tr>
+      <tr><td><code>transcription</code></td><td><code>{ text, isFinal, confidence }</code></td><td>Resultado Vosk</td></tr>
+      <tr><td><code>test_finished</code></td><td><code>{}</code></td><td>Test 6CIT terminado</td></tr>
+      <tr><td><code>server_stats</code></td><td><code>{ activeConnections, ... }</code></td><td>Estadísticas cada 2s</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S9 -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">9</span>Test 6CIT — Protocolo de Evaluación</div>
+<div class="section-body">
+  <h3>9.1 Preguntas del Test</h3>
+  <table>
+    <thead><tr><th>#</th><th>ID</th><th>Pregunta</th><th>Tipo</th><th>Puntaje Máx.</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><code>year</code></td><td>¿En qué año estamos?</td><td>Binary</td><td>4</td></tr>
+      <tr><td>2</td><td><code>month</code></td><td>¿En qué mes del año estamos?</td><td>Binary</td><td>3</td></tr>
+      <tr><td>3</td><td><code>address_register</code></td><td>Recuerde: <strong>Manuel Rodríguez 1373, Santiago</strong></td><td>Registro</td><td>0</td></tr>
+      <tr><td>4</td><td><code>time</code></td><td>¿Qué hora es aproximadamente?</td><td>Tiempo ±60 min</td><td>3</td></tr>
+      <tr><td>5</td><td><code>countdown</code></td><td>Cuente hacia atrás desde 20 hasta 1</td><td>Parcial</td><td>4</td></tr>
+      <tr><td>6</td><td><code>months_reverse</code></td><td>Diga los meses en orden inverso desde diciembre</td><td>Parcial</td><td>4</td></tr>
+      <tr><td>7</td><td><code>address_recall</code></td><td>¿Cuál era la dirección que le pedí recordar?</td><td>Dirección</td><td>10</td></tr>
+    </tbody>
+  </table>
+
+  <h3>9.2 Escala de Interpretación (Escala Inversa)</h3>
+  <div class="diagram">
+    <div class="diagram-title">Figura 3 — Barra de interpretación del puntaje 6CIT (0 = mejor, 28 = peor)</div>
+    <svg width="740" height="120" viewBox="0 0 740 120" xmlns="http://www.w3.org/2000/svg">
+      <!-- Scale bar background -->
+      <rect x="30" y="30" width="680" height="40" rx="4" fill="#e2e8f0"/>
+
+      <!-- Green zone 0-7 (0 to 7/28 * 680 = 170) -->
+      <rect x="30" y="30" width="170" height="40" rx="4" fill="#16a34a"/>
+      <!-- Yellow zone 8-9 (170 to 218) -->
+      <rect x="200" y="30" width="48" height="40" fill="#ca8a04"/>
+      <!-- Red zone 10-28 (218 to 710) -->
+      <rect x="248" y="30" width="462" height="40" rx="4" fill="#dc2626"/>
+      <!-- Fix overlap green/yellow -->
+      <rect x="200" y="30" width="48" height="40" fill="#ca8a04"/>
+
+      <!-- Labels inside bars -->
+      <text x="115" y="55" text-anchor="middle" font-size="13" font-weight="700" fill="#fff" font-family="Arial">NORMAL</text>
+      <text x="224" y="55" text-anchor="middle" font-size="10" font-weight="700" fill="#fff" font-family="Arial">LEVE</text>
+      <text x="480" y="55" text-anchor="middle" font-size="13" font-weight="700" fill="#fff" font-family="Arial">DETERIORO SIGNIFICATIVO</text>
+
+      <!-- Tick marks and numbers -->
+      <line x1="30" y1="70" x2="30" y2="82" stroke="#475569" stroke-width="1.5"/>
+      <text x="30" y="94" text-anchor="middle" font-size="11" fill="#475569" font-family="Arial">0</text>
+
+      <line x1="200" y1="70" x2="200" y2="82" stroke="#475569" stroke-width="1.5"/>
+      <text x="200" y="94" text-anchor="middle" font-size="11" fill="#475569" font-family="Arial">7</text>
+
+      <line x1="248" y1="70" x2="248" y2="82" stroke="#475569" stroke-width="1.5"/>
+      <text x="248" y="94" text-anchor="middle" font-size="11" fill="#475569" font-family="Arial">9</text>
+
+      <line x1="710" y1="70" x2="710" y2="82" stroke="#475569" stroke-width="1.5"/>
+      <text x="710" y="94" text-anchor="middle" font-size="11" fill="#475569" font-family="Arial">28</text>
+
+      <!-- Range labels -->
+      <text x="115" y="112" text-anchor="middle" font-size="10" fill="#16a34a" font-weight="700" font-family="Arial">0–7 pts</text>
+      <text x="224" y="112" text-anchor="middle" font-size="10" fill="#ca8a04" font-weight="700" font-family="Arial">8–9</text>
+      <text x="480" y="112" text-anchor="middle" font-size="10" fill="#dc2626" font-weight="700" font-family="Arial">10–28 pts</text>
+    </svg>
+  </div>
+
+  <table>
+    <thead><tr><th>Rango</th><th>Nivel</th><th>Interpretación</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge badge-green">0 – 7</span></td><td>Normal</td><td>Sin indicios de deterioro cognitivo</td></tr>
+      <tr><td><span class="badge badge-yellow">8 – 9</span></td><td>Deterioro leve</td><td>Posible deterioro cognitivo leve; seguimiento recomendado</td></tr>
+      <tr><td><span class="badge badge-red">10 – 28</span></td><td>Deterioro significativo</td><td>Deterioro cognitivo significativo; evaluación clínica urgente</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S10 -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">10</span>Algoritmos de Puntuación</div>
+<div class="section-body">
+  <h3>10.1 Puntuación Binaria (year, month)</h3>
+  <pre>Año correcto: acepta 2026 | "26" | "veintiséis" | "veinte veintiséis" | "20 26"
+  → 0 pts si correcto, 4 pts si incorrecto
+
+Mes correcto: acepta "marzo" | "3" | "tercer mes"
+  → 0 pts si correcto, 3 pts si incorrecto</pre>
+
+  <h3>10.2 Puntuación de Hora — ±60 minutos (time)</h3>
+  <pre>1. Extraer hora en texto ("las tres y media")
+2. Convertir a minutos totales: 3×60 + 30 = 210 min
+3. Obtener hora actual del sistema (TZ=America/Santiago)
+4. Diferencia mínima sobre ciclo de 12h
+5. diff ≤ 60 min → correcto (0 pts) | diff > 60 min → incorrecto (3 pts)</pre>
+
+  <h3>10.3 Puntuación Parcial (countdown, months_reverse)</h3>
+  <table>
+    <thead><tr><th>Calidad</th><th>Criterio</th><th>Puntaje</th></tr></thead>
+    <tbody>
+      <tr><td><code>perfect</code></td><td>0 errores, secuencia completa</td><td>0 pts</td></tr>
+      <tr><td><code>one_error</code></td><td>≤1 error en la secuencia</td><td>2 pts</td></tr>
+      <tr><td><code>failed</code></td><td>&gt;1 error o secuencia incompleta</td><td>4 pts</td></tr>
+      <tr><td><code>no_response</code></td><td>Sin respuesta</td><td>4 pts</td></tr>
+    </tbody>
+  </table>
+
+  <h3>10.4 Puntuación de Dirección (address_recall)</h3>
+  <pre>Dirección: "Manuel Rodríguez 1373 Santiago"
+Componentes: [Manuel, Rodríguez, 1373, Santiago]
+Por cada componente NO recordado: +2 puntos de error
+Rango: 0–10 pts (5 errores × 2 = máximo teórico 10)
+
+Variantes aceptadas para "1373":
+  "1373" | "trece setenta y tres" | "mil trescientos setenta y tres"</pre>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S11 -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">11</span>Pipeline de Procesamiento de Audio</div>
+<div class="section-body">
+  <h3>11.1 Diagrama del Pipeline Completo (v2.1.0)</h3>
+  <div class="diagram">
+    <div class="diagram-title">Figura 4 — Pipeline de audio con las capas de filtrado de v2.1.0</div>
+    <svg width="760" height="460" viewBox="0 0 760 460" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="a3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#475569"/></marker>
+        <marker id="a3r" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#dc2626"/></marker>
+        <marker id="a3g" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#16a34a"/></marker>
+        <marker id="a3b" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#2563eb"/></marker>
+      </defs>
+
+      <!-- Step 1: Microphone -->
+      <rect x="10" y="20" width="100" height="50" rx="6" fill="#1a2744" stroke="#2563eb" stroke-width="2"/>
+      <text x="60" y="42" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="Arial">Micrófono</text>
+      <text x="60" y="58" text-anchor="middle" font-size="10" fill="#93c5fd" font-family="Arial">Float32 audio</text>
+
+      <!-- Arrow -->
+      <line x1="110" y1="45" x2="148" y2="45" stroke="#475569" stroke-width="1.5" marker-end="url(#a3)"/>
+
+      <!-- Step 2: AudioWorklet -->
+      <rect x="150" y="20" width="110" height="50" rx="6" fill="#1a2744" stroke="#2563eb" stroke-width="2"/>
+      <text x="205" y="40" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="Arial">AudioWorklet</text>
+      <text x="205" y="55" text-anchor="middle" font-size="9" fill="#93c5fd" font-family="Arial">Float32→Int16</text>
+      <text x="205" y="67" text-anchor="middle" font-size="9" fill="#93c5fd" font-family="Arial">16kHz mono 200ms</text>
+
+      <line x1="260" y1="45" x2="298" y2="45" stroke="#475569" stroke-width="1.5" marker-end="url(#a3)"/>
+
+      <!-- Step 3: parseAudioChunk -->
+      <rect x="300" y="20" width="130" height="50" rx="6" fill="#fff" stroke="#f59e0b" stroke-width="2"/>
+      <text x="365" y="40" text-anchor="middle" font-size="11" font-weight="700" fill="#b45309" font-family="Arial">parseAudioChunk</text>
+      <text x="365" y="55" text-anchor="middle" font-size="9" fill="#475569" font-family="Arial">Buffer→Int16Array</text>
+      <text x="365" y="67" text-anchor="middle" font-size="9" fill="#16a34a" font-family="Arial">Fix v2.1.0: slice()</text>
+
+      <line x1="430" y1="45" x2="468" y2="45" stroke="#475569" stroke-width="1.5" marker-end="url(#a3)"/>
+
+      <!-- Step 4: Noise Gate -->
+      <rect x="470" y="20" width="110" height="50" rx="6" fill="#fff" stroke="#dc2626" stroke-width="2"/>
+      <text x="525" y="40" text-anchor="middle" font-size="11" font-weight="700" fill="#dc2626" font-family="Arial">Noise Gate</text>
+      <text x="525" y="55" text-anchor="middle" font-size="9" fill="#475569" font-family="Arial">RMS &lt; 150</text>
+      <text x="525" y="67" text-anchor="middle" font-size="9" fill="#475569" font-family="Arial">→ silencio a Vosk</text>
+
+      <line x1="580" y1="45" x2="618" y2="45" stroke="#475569" stroke-width="1.5" marker-end="url(#a3)"/>
+
+      <!-- Step 5: Vosk -->
+      <rect x="620" y="20" width="120" height="50" rx="6" fill="#fff" stroke="#16a34a" stroke-width="2"/>
+      <text x="680" y="42" text-anchor="middle" font-size="11" font-weight="700" fill="#16a34a" font-family="Arial">Vosk STT</text>
+      <text x="680" y="58" text-anchor="middle" font-size="9" fill="#475569" font-family="Arial">Español offline</text>
+
+      <!-- Down arrow from Vosk -->
+      <line x1="680" y1="70" x2="680" y2="108" stroke="#475569" stroke-width="1.5" marker-end="url(#a3)"/>
+
+      <!-- Branch header -->
+      <text x="680" y="130" text-anchor="middle" font-size="11" fill="#475569" font-family="Arial" font-style="italic">STT text</text>
+
+      <!-- Fork lines -->
+      <line x1="680" y1="135" x2="680" y2="160" stroke="#475569" stroke-width="1.5"/>
+      <line x1="340" y1="160" x2="680" y2="160" stroke="#475569" stroke-width="1.5"/>
+
+      <!-- Left branch: Conversation path -->
+      <line x1="340" y1="160" x2="340" y2="188" stroke="#2563eb" stroke-width="1.5" marker-end="url(#a3b)"/>
+      <text x="200" y="178" font-size="10" fill="#2563eb" font-family="Arial" font-style="italic">Rama conversación</text>
+
+      <!-- isConversationNoise box -->
+      <rect x="250" y="190" width="180" height="60" rx="6" fill="#fef9c3" stroke="#ca8a04" stroke-width="2"/>
+      <text x="340" y="212" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e" font-family="Arial">isConversationNoise()</text>
+      <text x="340" y="228" text-anchor="middle" font-size="9" fill="#475569" font-family="Arial">Interjecciones puras</text>
+      <text x="340" y="242" text-anchor="middle" font-size="9" fill="#475569" font-family="Arial">≥2 palabras en inglés</text>
+
+      <!-- Discard arrow left -->
+      <line x1="250" y1="220" x2="208" y2="220" stroke="#dc2626" stroke-width="1.5" marker-end="url(#a3r)"/>
+      <text x="145" y="216" font-size="10" fill="#dc2626" font-family="Arial">DESCARTAR</text>
+
+      <!-- Pass to LLM arrow -->
+      <line x1="340" y1="250" x2="340" y2="288" stroke="#16a34a" stroke-width="1.5" marker-end="url(#a3g)"/>
+
+      <!-- askLLM box -->
+      <rect x="260" y="290" width="160" height="50" rx="6" fill="#fff" stroke="#2563eb" stroke-width="2"/>
+      <text x="340" y="312" text-anchor="middle" font-size="11" font-weight="700" fill="#1a2744" font-family="Arial">askLLM()</text>
+      <text x="340" y="328" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">Ollama Qwen2.5:7b</text>
+
+      <!-- Right branch: TestRunner path -->
+      <line x1="680" y1="160" x2="680" y2="188" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#a3)"/>
+      <text x="695" y="178" font-size="10" fill="#7c3aed" font-family="Arial" font-style="italic">Rama test</text>
+
+      <!-- Pre-armed buffer box -->
+      <rect x="590" y="190" width="180" height="60" rx="6" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+      <text x="680" y="212" text-anchor="middle" font-size="11" font-weight="700" fill="#7c3aed" font-family="Arial">Pre-armed Buffer</text>
+      <text x="680" y="228" text-anchor="middle" font-size="9" fill="#475569" font-family="Arial">_bufferedSTT</text>
+      <text x="680" y="242" text-anchor="middle" font-size="9" fill="#475569" font-family="Arial">Captura durante TTS</text>
+
+      <!-- Filter box -->
+      <rect x="590" y="290" width="180" height="70" rx="6" fill="#fef2f2" stroke="#dc2626" stroke-width="2"/>
+      <text x="680" y="312" text-anchor="middle" font-size="11" font-weight="700" fill="#dc2626" font-family="Arial">Filtro Buffer v2.1.0</text>
+      <text x="680" y="328" text-anchor="middle" font-size="9" fill="#475569" font-family="Arial">isFiller? → descartar</text>
+      <text x="680" y="342" text-anchor="middle" font-size="9" fill="#475569" font-family="Arial">isQuestionEcho? → descartar</text>
+      <text x="680" y="356" text-anchor="middle" font-size="9" fill="#475569" font-family="Arial">== _lastAccepted? → descartar</text>
+
+      <line x1="680" y1="250" x2="680" y2="288" stroke="#475569" stroke-width="1.5" marker-end="url(#a3)"/>
+
+      <!-- waitForResponse -->
+      <rect x="590" y="390" width="180" height="50" rx="6" fill="#fff" stroke="#7c3aed" stroke-width="2"/>
+      <text x="680" y="412" text-anchor="middle" font-size="11" font-weight="700" fill="#7c3aed" font-family="Arial">waitForResponse()</text>
+      <text x="680" y="428" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">ResponseValidator</text>
+
+      <line x1="680" y1="360" x2="680" y2="388" stroke="#16a34a" stroke-width="1.5" marker-end="url(#a3g)"/>
+    </svg>
+  </div>
+
+  <h3>11.2 Corrección parseAudioChunk (v2.1.0)</h3>
+  <div class="callout danger">
+    <strong>Bug en v2.0.0:</strong> <code>new Int16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2)</code> lanzaba <code>RangeError: start offset of Int16Array should be a multiple of 2</code> cuando el pool de buffers de Node.js asignaba un <code>byteOffset</code> impar.
+  </div>
+  <pre>// Corrección v2.1.0 (server.js:666):
+const ab = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
+return new Int16Array(ab);
+// slice() genera un ArrayBuffer independiente y correctamente alineado</pre>
+
+  <h3>11.3 VAD — Umbrales por Pregunta</h3>
+  <table>
+    <thead><tr><th>Pregunta</th><th>Modo</th><th>Silencio para resolver</th></tr></thead>
+    <tbody>
+      <tr><td><code>countdown</code></td><td>VAD</td><td>4500 ms</td></tr>
+      <tr><td><code>months_reverse</code></td><td>VAD</td><td>5000 ms</td></tr>
+      <tr><td>otras</td><td>SINGLE</td><td>1800 ms (default)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S12 -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">12</span>TestRunner — Máquina de Estados</div>
+<div class="section-body">
+  <h3>12.1 Diagrama de Estados</h3>
+  <div class="diagram">
+    <div class="diagram-title">Figura 5 — Máquina de estados del TestRunner</div>
+    <svg width="700" height="280" viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="a4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#475569"/></marker>
+        <marker id="a4g" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#16a34a"/></marker>
+        <marker id="a4r" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#dc2626"/></marker>
+        <marker id="a4b" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#2563eb"/></marker>
+      </defs>
+
+      <!-- IDLE -->
+      <circle cx="100" cy="140" r="55" fill="#f0fdf4" stroke="#16a34a" stroke-width="2.5"/>
+      <text x="100" y="136" text-anchor="middle" font-size="13" font-weight="700" fill="#16a34a" font-family="Arial">IDLE</text>
+      <text x="100" y="152" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">Sin operación</text>
+      <text x="100" y="165" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">activa</text>
+
+      <!-- WAITING_RESPONSE -->
+      <rect x="250" y="80" width="190" height="80" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2.5"/>
+      <text x="345" y="112" text-anchor="middle" font-size="12" font-weight="700" fill="#1a2744" font-family="Arial">WAITING_RESPONSE</text>
+      <text x="345" y="130" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">Esperando respuesta</text>
+      <text x="345" y="145" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">del paciente</text>
+
+      <!-- WAITING_CONFIRM -->
+      <rect x="250" y="190" width="190" height="70" rx="10" fill="#fff7ed" stroke="#f59e0b" stroke-width="2.5"/>
+      <text x="345" y="218" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e" font-family="Arial">WAITING_CONFIRM</text>
+      <text x="345" y="236" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">Esperando confirmación</text>
+      <text x="345" y="250" text-anchor="middle" font-size="10" fill="#475569" font-family="Arial">de cancelación</text>
+
+      <!-- Transition: IDLE → WAITING_RESPONSE -->
+      <line x1="155" y1="120" x2="248" y2="105" stroke="#2563eb" stroke-width="2" marker-end="url(#a4b)"/>
+      <text x="185" y="107" font-size="9" fill="#2563eb" font-family="Arial">conduct_test()</text>
+
+      <!-- Transition: WAITING_RESPONSE → WAITING_CONFIRM -->
+      <line x1="345" y1="160" x2="345" y2="188" stroke="#f59e0b" stroke-width="2" marker-end="url(#a4)"/>
+      <text x="355" y="178" font-size="9" fill="#92400e" font-family="Arial">isCancelIntent()</text>
+
+      <!-- Transition: WAITING_CONFIRM → WAITING_RESPONSE (No) -->
+      <path d="M250,220 C200,220 200,140 250,130" fill="none" stroke="#475569" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#a4)"/>
+      <text x="165" y="185" font-size="9" fill="#475569" font-family="Arial">No (volver)</text>
+
+      <!-- Transition: WAITING_CONFIRM → IDLE (Yes, cancel) -->
+      <path d="M250,245 C160,260 120,230 120,200" fill="none" stroke="#dc2626" stroke-width="2" marker-end="url(#a4r)"/>
+      <text x="140" y="268" font-size="9" fill="#dc2626" font-family="Arial">Sí → CancelledError</text>
+
+      <!-- Transition: WAITING_RESPONSE → IDLE (answered) -->
+      <path d="M250,120 C210,95 170,100 156,115" fill="none" stroke="#16a34a" stroke-width="2" marker-end="url(#a4g)"/>
+      <text x="175" y="91" font-size="9" fill="#16a34a" font-family="Arial">respuesta válida / no_response</text>
+
+      <!-- Legend -->
+      <rect x="520" y="60" width="160" height="120" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+      <text x="600" y="80" text-anchor="middle" font-size="11" font-weight="700" fill="#1a2744" font-family="Arial">Leyenda</text>
+      <line x1="535" y1="96" x2="565" y2="96" stroke="#2563eb" stroke-width="2"/>
+      <text x="575" y="100" font-size="10" fill="#475569" font-family="Arial">Transición normal</text>
+      <line x1="535" y1="116" x2="565" y2="116" stroke="#f59e0b" stroke-width="2"/>
+      <text x="575" y="120" font-size="10" fill="#475569" font-family="Arial">Cancelación</text>
+      <line x1="535" y1="136" x2="565" y2="136" stroke="#dc2626" stroke-width="2"/>
+      <text x="575" y="140" font-size="10" fill="#475569" font-family="Arial">CancelledError</text>
+      <line x1="535" y1="156" x2="565" y2="156" stroke="#16a34a" stroke-width="2"/>
+      <text x="575" y="160" font-size="10" fill="#475569" font-family="Arial">Éxito / timeout</text>
+    </svg>
+  </div>
+
+  <h3>12.2 Lógica de waitForResponse()</h3>
+  <pre>Intento 1 (timeout 40s/60s):
+  └─ Esperar respuesta
+     ├─ Filler detectado → ignorar, seguir esperando
+     ├─ Echo de pregunta → ignorar, seguir esperando
+     ├─ Solicitud de repetición → repetir pregunta, re-esperar
+     ├─ Intento de cancelación → ir a WAITING_CONFIRM
+     ├─ Respuesta válida (ResponseValidator) → DONE
+     │    └─ this._lastAcceptedText = normalize(answer.text)  [nuevo v2.1.0]
+     ├─ Respuesta inválida → pedir repetición, intento 2
+     └─ Timeout → repetir pregunta, intento 2
+
+Intento 2 (timeout 30s):
+  └─ Misma lógica
+     └─ Timeout → { status: 'no_response' }
+
+WAITING_CONFIRM:
+  └─ "¿Desea detener la evaluación?"
+     ├─ Sí → throw CancelledError
+     └─ No → volver a WAITING_RESPONSE (intento actual)</pre>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S13 -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">13</span>Gestión de Contexto LLM &amp; Seguridad</div>
+<div class="section-body">
+  <h3>13.1 Compresión de Contexto</h3>
+  <pre>Activado cuando: dialog.length > 20 Y (now - _lastCompressed) > 60s
+
+1. Extraer mensajes más antiguos (excepto últimos 10)
+2. LLM genera resumen en máximo 3 oraciones
+3. Guardar resumen en session.summary (BD)
+4. Truncar dialog: [system_prompt, summary_msg, ...últimos_10]
+5. Reducción: ~40 mensajes → ~12 mensajes</pre>
+
+  <h3>13.2 Guardianes del Sistema</h3>
+  <table>
+    <thead><tr><th>Guardia</th><th>Descripción</th></tr></thead>
+    <tbody>
+      <tr><td>test único por día</td><td><code>hasTestToday()</code> bloquea evaluaciones repetidas</td></tr>
+      <tr><td>test único por sesión</td><td><code>testDoneThisSession</code> bloquea re-test</td></tr>
+      <tr><td>test activo</td><td><code>activeRunner != null</code> bloquea nuevo test</td></tr>
+      <tr><td>manual test detection</td><td>11 patrones regex interceptan LLM administrando test</td></tr>
+      <tr><td>bye cooldown</td><td>Bloquea STT 4s tras despedida</td></tr>
+      <tr><td>tool call limit</td><td>Máximo 3 iteraciones de tool calls por turno</td></tr>
+      <tr><td>noise gate</td><td>RMS &lt; 150 → silencio para Vosk</td></tr>
+      <tr><td><span class="badge badge-blue">NEW</span> conversation noise filter</td><td><code>isConversationNoise()</code> filtra ruido/inglés antes del LLM</td></tr>
+      <tr><td><span class="badge badge-blue">NEW</span> pre-armed buffer filter</td><td>Filler/echo/duplicado descartados en flush del buffer</td></tr>
+    </tbody>
+  </table>
+
+  <h3>13.3 Manejo de Errores por Componente</h3>
+  <table>
+    <thead><tr><th>Componente</th><th>Error</th><th>Comportamiento</th></tr></thead>
+    <tbody>
+      <tr><td>Vosk</td><td>Modelo no encontrado</td><td>Continúa sin STT, advierte al usuario</td></tr>
+      <tr><td>LLM (Ollama)</td><td>HTTP error</td><td>Excepción capturada, respuesta vacía</td></tr>
+      <tr><td>TTS (XTTS-v2)</td><td>No disponible</td><td><code>null</code> retornado, sin audio (graceful)</td></tr>
+      <tr><td>SearXNG</td><td>Timeout 8s</td><td>Mensaje de error amigable al paciente</td></tr>
+      <tr><td>TestRunner</td><td>Error inesperado</td><td><code>status='interrupted'</code>, libera control</td></tr>
+      <tr><td>CancelledError</td><td>Cancelación explícita</td><td>Guardado con <code>status='cancelled'</code></td></tr>
+      <tr><td><span class="badge badge-blue">NEW</span> parseAudioChunk</td><td>byteOffset impar</td><td>Corregido en v2.1.0 mediante <code>slice()</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S14 -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">14</span>Configuración y Despliegue</div>
+<div class="section-body">
+  <h3>14.1 Variables de Entorno (<code>src/.env</code>)</h3>
+  <pre>PORT=3000
+TZ=America/Santiago          # Crítico para scoring de hora del 6CIT
+
+LLM_BASE_URL=http://192.168.1.87:11434
+LLM_MODEL=qwen2.5:7b
+LLM_MAX_TOKENS=512
+
+TTS_URL=http://192.168.1.87:8002    # XTTS-v2 FastAPI
+
+SEARXNG_URL=http://localhost:8080   # Meta-búsqueda SearXNG
+
+SAVE_AUDIO=false</pre>
+
+  <h3>14.2 Inicio del Sistema (3 procesos)</h3>
+  <pre># Terminal 1: LLM
+ollama serve
+
+# Terminal 2: TTS (WSL2/GPU)
+source ~/xtts-env/bin/activate
+uvicorn tts_service:app --host 0.0.0.0 --port 8002
+
+# Terminal 3: Servidor ALMA
+cd /home/services/Ion_backend/src && npm run dev
+
+# SearXNG (Podman, opcional):
+podman run -d --name searxng --restart unless-stopped \
+  -p 8080:8080 -v /home/services/searxng:/etc/searxng:Z \
+  docker.io/searxng/searxng:latest</pre>
+
+  <h3>14.3 Estructura de Directorios</h3>
+  <pre>/home/services/Ion_backend/
+├── src/
+│   ├── server.js               (1023 líneas — servidor principal)
+│   ├── db.js                   (346 líneas — ORM SQLite)
+│   ├── .env
+│   ├── engine/
+│   │   ├── TestRunner.js       (503 líneas — motor del test)
+│   │   ├── ResponseValidator.js(280 líneas — validador)
+│   │   ├── ttsHelper.js        (104 líneas — síntesis voz)
+│   │   └── tests/
+│   │       ├── BaseTest.js
+│   │       ├── registry.js
+│   │       └── 6cit/
+│   │           ├── index.js    (orquestador)
+│   │           ├── questions.js(definiciones)
+│   │           └── scorer.js   (puntuación)
+│   └── public/
+│       └── index.html          (cliente web)
+├── data/
+│   └── alma.db
+└── package.json</pre>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S15 CHANGES -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">15</span>Cambios v2.1.0</div>
+<div class="section-body">
+  <p><strong>Fecha de lanzamiento:</strong> 31 de marzo de 2026</p>
+
+  <div class="change-item">
+    <div class="change-item-header">
+      <span>15.1 — Bug Fix: parseAudioChunk — Alineación de Buffer</span>
+      <span class="badge badge-red">BUG FIX</span>
+    </div>
+    <div class="change-item-body">
+      <p><strong>Archivo:</strong> <code>server.js:666</code></p>
+      <p><strong>Problema:</strong> En entornos Node.js con pool de buffers compartido, los <code>Buffer</code> recibidos vía Socket.IO pueden tener <code>byteOffset</code> impar. La construcción <code>new Int16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2)</code> lanzaba <code>RangeError: start offset of Int16Array should be a multiple of 2</code>.</p>
+      <p><strong>Causa raíz:</strong> El constructor de <code>TypedArray</code> con <code>(buffer, byteOffset, length)</code> requiere que <code>byteOffset</code> sea múltiplo del tamaño del elemento (2 bytes para Int16). El pool de Node.js puede asignar offsets impares al reutilizar memoria.</p>
+      <pre>// Antes (v2.0.0 — crash):
+return new Int16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2);
+
+// Después (v2.1.0 — correcto):
+const ab = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
+return new Int16Array(ab);</pre>
+      <p>El método <code>slice()</code> genera un <code>ArrayBuffer</code> independiente y correctamente alineado.</p>
+    </div>
+  </div>
+
+  <div class="change-item">
+    <div class="change-item-header">
+      <span>15.2 — Mejora: Filtrado de Ruido en Buffer Pre-Armado (TestRunner.js)</span>
+      <span class="badge badge-blue">IMPROVEMENT</span>
+    </div>
+    <div class="change-item-body">
+      <p><strong>Archivo:</strong> <code>engine/TestRunner.js</code> (+23 líneas)</p>
+      <p><strong>Problema:</strong> STT emitida mientras el TTS reproducía se almacenaba en <code>_bufferedSTT</code>. Al iniciar la siguiente pregunta, ese buffer podía contener interjecciones, el eco de la pregunta recién oída, o la última respuesta aceptada que el micrófono captó.</p>
+      <p><strong>Solución:</strong> Nuevo campo <code>_lastAcceptedText = null</code> y triple verificación en el flush del buffer:</p>
+      <pre>// En _waitSingle() al vaciar _bufferedSTT:
+if (isFiller(buffered, 'single'))                         continue; // descarta "uh", "mm"
+if (isQuestionEcho(buffered, this._currentQuestion))      continue; // descarta eco pregunta
+if (normalize(buffered) === this._lastAcceptedText)        continue; // descarta duplicado
+
+// En waitForResponse() al aceptar una respuesta:
+this._lastAcceptedText = normalize(answer.text);</pre>
+      <p>El mismo triple filtro aplica en el flush de <code>_waitVAD()</code>.</p>
+    </div>
+  </div>
+
+  <div class="change-item">
+    <div class="change-item-header">
+      <span>15.3 — Nueva Función: isConversationNoise() (server.js)</span>
+      <span class="badge badge-blue">NEW FEATURE</span>
+    </div>
+    <div class="change-item-body">
+      <p><strong>Archivo:</strong> <code>server.js</code> (~línea 800)</p>
+      <p><strong>Propósito:</strong> Evitar llamadas innecesarias al LLM cuando Vosk transcribe ruido de fondo o produce artefactos en inglés por audio ambiguo.</p>
+      <pre>const ENGLISH_NOISE_RE = /\b(want|try|the|and|with|have|from|they|what|when|where|...)\b/gi;
+
+function isConversationNoise(text) {
+  const t = text.trim().toLowerCase();
+
+  // 1. Interjecciones puras (ruido de audio)
+  if (/^(e+m+|a+h+|u+h+|hm+|mm+|eh+|ah+|uh+|oh+)\s*$/i.test(t)) return true;
+
+  // 2. ≥2 palabras en inglés en utterance corta (≤7 palabras) = transcripción basura
+  const words = t.split(/\s+/);
+  if (words.length &lt;= 7) {
+    const hits = t.match(ENGLISH_NOISE_RE);
+    if (hits &amp;&amp; hits.length &gt;= 2) return true;
+  }
+  return false;
+}</pre>
+      <p>Integrado en la rama <code>continue_conversation</code> antes de invocar <code>askLLM()</code>.</p>
+    </div>
+  </div>
+
+  <h3>15.4 Resumen de Cambios de Líneas de Código</h3>
+  <table>
+    <thead><tr><th>Archivo</th><th>v2.0.0</th><th>v2.1.0</th><th>Delta</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/server.js</code></td><td>996</td><td>1023</td><td><span class="badge badge-green">+27</span></td></tr>
+      <tr><td><code>engine/TestRunner.js</code></td><td>480</td><td>503</td><td><span class="badge badge-green">+23</span></td></tr>
+      <tr><td><code>engine/ResponseValidator.js</code></td><td>280</td><td>280</td><td>0</td></tr>
+      <tr><td><code>engine/ttsHelper.js</code></td><td>105</td><td>104</td><td>-1</td></tr>
+      <tr><td><code>src/db.js</code></td><td>347</td><td>346</td><td>-1</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ S16 GLOSSARY -->
+<div class="page-break"></div>
+<div class="section-header"><span class="num">16</span>Glosario Técnico</div>
+<div class="section-body">
+  <table>
+    <thead><tr><th>Término</th><th>Definición</th></tr></thead>
+    <tbody>
+      <tr><td><strong>6CIT</strong></td><td>Six-item Cognitive Impairment Test. Test cognitivo breve validado clínicamente</td></tr>
+      <tr><td><strong>Kingshill 2000</strong></td><td>Versión del 6CIT para administración verbal</td></tr>
+      <tr><td><strong>STT</strong></td><td>Speech-to-Text. Reconocimiento automático de habla</td></tr>
+      <tr><td><strong>TTS</strong></td><td>Text-to-Speech. Síntesis de voz a partir de texto</td></tr>
+      <tr><td><strong>LLM</strong></td><td>Large Language Model. Modelo de lenguaje (Qwen2.5:7b)</td></tr>
+      <tr><td><strong>Vosk</strong></td><td>Motor de reconocimiento de habla offline de código abierto</td></tr>
+      <tr><td><strong>Ollama</strong></td><td>Runtime local para ejecutar LLMs sin GPU en la nube</td></tr>
+      <tr><td><strong>XTTS-v2</strong></td><td>Modelo de síntesis de voz neuronal con control de acento</td></tr>
+      <tr><td><strong>SearXNG</strong></td><td>Meta-motor de búsqueda web autoalojado</td></tr>
+      <tr><td><strong>AudioWorklet</strong></td><td>API Web Audio para procesamiento fuera del hilo principal</td></tr>
+      <tr><td><strong>PCM16</strong></td><td>Pulse Code Modulation 16 bits. Audio crudo sin compresión</td></tr>
+      <tr><td><strong>VAD</strong></td><td>Voice Activity Detection. Detección de actividad de voz por RMS</td></tr>
+      <tr><td><strong>Noise Gate</strong></td><td>Filtro que silencia audio cuando el nivel de señal es bajo</td></tr>
+      <tr><td><strong>RMS</strong></td><td>Root Mean Square. Medida de amplitud de señal de audio</td></tr>
+      <tr><td><strong>Tool Calling</strong></td><td>Capacidad del LLM de invocar funciones externas</td></tr>
+      <tr><td><strong>sql.js</strong></td><td>SQLite compilado a WebAssembly para Node.js</td></tr>
+      <tr><td><strong>SessionContext</strong></td><td>Objeto que encapsula todo el estado de una sesión activa</td></tr>
+      <tr><td><strong>Dialog</strong></td><td>Array de mensajes del historial de conversación para el LLM</td></tr>
+      <tr><td><strong>CancelledError</strong></td><td>Excepción para señalizar cancelación del test por el paciente</td></tr>
+      <tr><td><strong>Debounce</strong></td><td>Técnica para diferir escrituras agrupando operaciones</td></tr>
+      <tr><td><strong>Escala Inversa</strong></td><td>El 6CIT puntúa errores: más puntos = mayor deterioro</td></tr>
+      <tr><td><strong>Wake Word</strong></td><td>Palabra clave de activación ("Hola ALMA", "Ok ALMA")</td></tr>
+      <tr><td><strong>Pre-armed buffer</strong></td><td>Buffer que captura STT mientras el TTS está reproduciéndose</td></tr>
+      <tr><td><strong>isConversationNoise</strong></td><td>Función que descarta transcripciones de baja calidad antes del LLM (v2.1.0)</td></tr>
+      <tr><td><strong>byteOffset alignment</strong></td><td>Requisito de que el offset de un TypedArray sea múltiplo del tamaño del elemento</td></tr>
+      <tr><td><strong>_lastAcceptedText</strong></td><td>Campo del TestRunner que evita aceptar duplicados de la última respuesta (v2.1.0)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- FOOTER -->
+<div style="margin-top:40px; border-top:2px solid var(--navy); padding-top:16px; text-align:center; color:#94a3b8; font-size:11px;">
+  Sistema ALMA v2.1.0 &mdash; Informe Técnico Interno &mdash; 31 de marzo de 2026<br>
+  Generado el 31/03/2026 &mdash; Clasificación: Documento Técnico Interno
+</div>
+
+</div><!-- .content -->
+</body>
+</html>

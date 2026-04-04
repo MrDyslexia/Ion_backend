@@ -1,3 +1,4 @@
+data/
 node_modules/
 npm-debug.log
 yarn-error.log
@@ -12,4 +13,3 @@ data/
 INFORME_TECNICO.md
 .claude
 CLAUDE.md
-data/*

@@ -112,9 +112,10 @@ class TestRunner {
     this._allAccumulated  = [];
 
     // Ventana de pre-armado: STT que llega justo al final del TTS
-    this._bufferedSTT = null;
-    this._lastSayEnd  = 0;
-    this._sayActive   = false;  // true mientras say() está reproduciendo audio
+    this._bufferedSTT      = null;
+    this._lastSayEnd       = 0;
+    this._sayActive        = false;  // true mientras say() está reproduciendo audio
+    this._lastAcceptedText = null;   // última respuesta aceptada (para filtrar ecos de pregunta anterior)
 
     // Flag de cancelación: permite que say() y waitForResponse() aborten limpiamente
     this._cancelled = false;
@@ -289,13 +290,25 @@ class TestRunner {
   // ── Espera interna: modo single ───────────────────────────────────────────────
 
   _waitSingle(timeoutMs) {
-    // Si hay STT pre-armado, resolverlo directamente sin esperar
+    // Si hay STT pre-armado, resolverlo directamente sin esperar (si no es ruido)
     if (this._bufferedSTT) {
       const buffered = this._bufferedSTT;
       this._bufferedSTT = null;
-      console.log(`📦 [Runner] Flush pre-armado (single): "${buffered.slice(0, 40)}"`);
-      this.state = STATE.IDLE;
-      return Promise.resolve({ text: buffered, timedOut: false });
+
+      const normalize = s => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+      const isEchoPrev = this._lastAcceptedText && normalize(buffered) === normalize(this._lastAcceptedText);
+      const discard = isFiller(buffered, 'single')
+        || isQuestionEcho(buffered, this._currentQuestion)
+        || isEchoPrev;
+
+      if (discard) {
+        console.log(`💭 [Runner] Pre-armado descartado (filler/eco/dup): "${buffered.slice(0, 40)}"`);
+        // caer al bloque de espera normal
+      } else {
+        console.log(`📦 [Runner] Flush pre-armado (single): "${buffered.slice(0, 40)}"`);
+        this.state = STATE.IDLE;
+        return Promise.resolve({ text: buffered, timedOut: false });
+      }
     }
     return new Promise(resolve => {
       this._resolve = resolve;
@@ -314,12 +327,16 @@ class TestRunner {
     this.ctx.vadEnabled  = true;
     if (silenceMs !== null) this.ctx.vadSilenceMs = silenceMs;
 
-    // Si hay STT pre-armado, añadirlo como primer fragmento acumulado
+    // Si hay STT pre-armado, añadirlo como primer fragmento acumulado (si no es ruido)
     if (this._bufferedSTT) {
       const buffered = this._bufferedSTT;
       this._bufferedSTT = null;
-      console.log(`📦 [Runner] Flush pre-armado (vad): "${buffered.slice(0, 40)}"`);
-      this._vadAccumulated.push(buffered);
+      if (!isFiller(buffered, 'vad') && !isQuestionEcho(buffered, this._currentQuestion)) {
+        console.log(`📦 [Runner] Flush pre-armado (vad): "${buffered.slice(0, 40)}"`);
+        this._vadAccumulated.push(buffered);
+      } else {
+        console.log(`💭 [Runner] Pre-armado VAD descartado (filler/eco): "${buffered.slice(0, 40)}"`);
+      }
     }
 
     return new Promise(resolve => {
@@ -380,6 +397,7 @@ class TestRunner {
       if (await isCancelIntent(second.text)) await this._handleCancelConfirm(questionText);
       const v = await isValidResponse(questionText, second.text);
       if (v === 'noise') return { status: 'unclear', text: null };
+      this._lastAcceptedText = second.text;
       return { status: 'answered', text: second.text };
     }
 
@@ -398,7 +416,10 @@ class TestRunner {
           this._allAccumulated.push(retry.text);
           const combined = this._allAccumulated.join(' ');
           const v2 = await isValidResponse(questionText, combined);
-          if (v2 !== 'noise') return { status: 'answered', text: combined };
+          if (v2 !== 'noise') {
+            this._lastAcceptedText = combined;
+            return { status: 'answered', text: combined };
+          }
         }
       }
       await this.say('Disculpe, no le entendí bien. ¿Puede repetir su respuesta?');
@@ -413,9 +434,11 @@ class TestRunner {
       const finalText = mode === 'vad'
         ? [...this._allAccumulated, retry.text].join(' ')
         : retry.text;
+      this._lastAcceptedText = finalText;
       return { status: 'answered', text: finalText };
     }
 
+    this._lastAcceptedText = first.text;
     return { status: 'answered', text: first.text };
   }
 
