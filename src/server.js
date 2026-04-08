@@ -28,7 +28,7 @@ const modelsDir = path.join(__dirname, 'models');
 [audioDir, modelsDir].forEach(d => { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); });
 
 /** ======================= Config ======================= */
-const SAVE_AUDIO      = process.env.SAVE_AUDIO === 'true';
+const SAVE_AUDIO      = process.env.SAVE_AUDIO !== 'false'; // default true ahora
 const LLM_BASE_URL    = process.env.LLM_BASE_URL    || 'http://localhost:11434';
 const LLM_MODEL       = process.env.LLM_MODEL       || 'qwen2.5:7b';
 const LLM_MAX_TOK     = Number.parseInt(process.env.LLM_MAX_TOKENS || '512', 10);
@@ -36,10 +36,20 @@ const TTS_URL         = process.env.TTS_URL         || 'http://localhost:8002';
 const PORT            = Number.parseInt(process.env.PORT   || '3000', 10);
 const SEARXNG_URL     = process.env.SEARXNG_URL     || 'http://localhost:8080';
 
-// Paciente por defecto para sesiones de prueba
 const DEFAULT_PATIENT_ID   = process.env.DEFAULT_PATIENT_ID   || 'DEV-001';
 const DEFAULT_PATIENT_NAME = process.env.DEFAULT_PATIENT_NAME || 'Paciente de Prueba';
 const DEFAULT_PATIENT_AGE  = Number.parseInt(process.env.DEFAULT_PATIENT_AGE || '70', 10);
+
+// ── Audio / ASR ────────────────────────────────────────────────────────────
+// Umbral RMS por debajo del cual el chunk se considera silencio (0–32767).
+// Subir si hay mucho ruido ambiental; bajar si se corta voz legítima.
+const NOISE_GATE_THRESHOLD  = Number.parseInt(process.env.NOISE_GATE_THRESHOLD  || '400',  10);
+// Umbral RMS para que el VAD declare que hay habla (durante el 6CIT).
+const VAD_SPEECH_THRESHOLD  = Number.parseInt(process.env.VAD_SPEECH_THRESHOLD  || '800',  10);
+// Ms de silencio continuo para que el VAD cierre el turno (durante el 6CIT).
+const VAD_SILENCE_MS        = Number.parseInt(process.env.VAD_SILENCE_MS        || '1800', 10);
+// Longitud mínima de transcripción (chars) para considerarla válida.
+const MIN_TRANSCRIPT_LENGTH = Number.parseInt(process.env.MIN_TRANSCRIPT_LENGTH || '4',    10);
 
 /** ======================= Vosk ======================= */
 let vosk        = null;
@@ -59,21 +69,17 @@ const initVosk = async () => {
   } catch (e) { console.error('❌ Vosk:', e); return false; }
 };
 
-
 /** ======================= Búsqueda web (SearXNG) ======================= */
 async function searchWeb(query) {
   const url = new URL(`${SEARXNG_URL}/search`);
   url.searchParams.set('q', query);
   url.searchParams.set('format', 'json');
   url.searchParams.set('language', 'es');
-
   const resp = await fetch(url.toString(), { signal: AbortSignal.timeout(8000) });
   if (!resp.ok) throw new Error(`SearXNG HTTP ${resp.status}`);
-
-  const data  = await resp.json();
+  const data = await resp.json();
   const hits  = (data.results || []).slice(0, 3);
   if (!hits.length) return 'No se encontraron resultados para esa búsqueda.';
-
   return hits.map((r, i) =>
     `[${i + 1}] ${r.title}\n${(r.content || r.description || '').slice(0, 200)}`
   ).join('\n\n');
@@ -86,7 +92,6 @@ function buildSystemPrompt(patient) {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
   });
   const notas = patient.clinical_notes ? ` Notas clínicas: ${patient.clinical_notes}.` : '';
-
   return `Eres ALMA, asistente de salud cognitiva. Responde siempre en español. Sé breve, cálido y empático.
 Fecha actual: ${ts}.
 Paciente: ${patient.name}, ${patient.age} años.${notas}
@@ -113,15 +118,10 @@ const LLM_TOOLS = [
     type: 'function',
     function: {
       name: 'search_web',
-      description: 'Busca información actual en internet. Úsala cuando el paciente pida noticias, precios, declaraciones de personas u otros datos recientes que puedan haber cambiado.',
+      description: 'Busca información actual en internet.',
       parameters: {
         type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            description: 'Términos de búsqueda en español, concisos y específicos'
-          }
-        },
+        properties: { query: { type: 'string', description: 'Términos de búsqueda en español' } },
         required: ['query']
       }
     }
@@ -130,16 +130,10 @@ const LLM_TOOLS = [
     type: 'function',
     function: {
       name: 'conduct_test',
-      description: 'Inicia la evaluación cognitiva 6CIT. Úsala ÚNICAMENTE cuando el paciente haya aceptado EXPLÍCITAMENTE hacer una evaluación de memoria (ejemplo: "sí quiero", "de acuerdo", "vamos"). NUNCA la uses en respuesta a preguntas sobre otros temas, búsquedas de información, o conversación general.',
+      description: 'Inicia la evaluación cognitiva 6CIT. Úsala ÚNICAMENTE cuando el paciente haya aceptado EXPLÍCITAMENTE.',
       parameters: {
         type: 'object',
-        properties: {
-          testId: {
-            type: 'string',
-            enum: ['sixcit'],
-            description: 'Identificador del test a realizar'
-          }
-        },
+        properties: { testId: { type: 'string', enum: ['sixcit'] } },
         required: ['testId']
       }
     }
@@ -160,11 +154,10 @@ async function executeTool(name, args, ctx) {
     console.log(`🔍 [Search] "${query}"`);
     try {
       const results = await searchWeb(query);
-      console.log(`🔍 [Search] ${results.split('\n')[0].slice(0, 60)}`);
       return results;
     } catch (e) {
       console.error('❌ [Search] Error:', e.message);
-      return 'No pude realizar la búsqueda en este momento. Por favor intenta más tarde.';
+      return 'No pude realizar la búsqueda en este momento.';
     }
   }
 
@@ -172,19 +165,15 @@ async function executeTool(name, args, ctx) {
     const { testId } = args;
     if (!testId) return 'Error: se requiere testId.';
     if (!ctx)    return 'Error: contexto de sesión no disponible.';
-
-    if (ctx.activeRunner)         return 'Ya hay una evaluación en curso.';
-    if (ctx.testDoneThisSession)  return 'Ya se realizó una evaluación en esta sesión. No la repitas.';
-
+    if (ctx.activeRunner)        return 'Ya hay una evaluación en curso.';
+    if (ctx.testDoneThisSession) return 'Ya se realizó una evaluación en esta sesión. No la repitas.';
     if (evaluationOps.hasTestToday(ctx.patient.id)) {
-      return 'El paciente ya realizó una evaluación hoy. No es necesario repetirla.';
+      return 'El paciente ya realizó una evaluación hoy.';
     }
 
-    // Guardar el último mensaje de usuario que disparó el test (para limpiarlo post-test)
     const lastUserMsg = [...ctx.dialog].reverse().find(m => m.role === 'user');
     ctx._testTriggerContent = lastUserMsg?.content || null;
 
-    // Lanzar el test de forma asíncrona, sin bloquear el tool call del LLM
     setImmediate(async () => {
       const runner = new TestRunner(ctx);
       ctx.activeRunner = runner;
@@ -192,17 +181,12 @@ async function executeTool(name, args, ctx) {
         const test   = getTest(testId);
         const result = await test.run(ctx, runner);
 
-        // ── Guardar en BD ──
         evaluationOps.save(ctx.sessionId, ctx.patient.id, result)
           .then(() => console.log(`✅ [Test] ${testId} guardado → ${result.status}, score: ${result.totalScore}/${result.maxScore}`))
           .catch(e => console.error('❌ [Test] Error guardando evaluación:', e.message));
 
-        // ── Limpiar el diálogo ANTES de hablar (sin datos de puntaje) ──
         const triggerContent = ctx._testTriggerContent;
         ctx._testTriggerContent = null;
-        // Eliminar: tool messages, assistant con tool_calls, system internos del test,
-        // el mensaje de usuario que disparó el test (evita non-sequitur post-test),
-        // y la respuesta del LLM que anunciaba el inicio ("Estamos iniciando la evaluación").
         let triggerRemoved = false;
         ctx.dialog = ctx.dialog.filter(m => {
           if (m.role === 'tool')      return false;
@@ -210,12 +194,9 @@ async function executeTool(name, args, ctx) {
           if (m.role === 'system'    && m.content?.includes('conduct_test'))    return false;
           if (m.role === 'system'    && m.content?.includes('evaluación'))      return false;
           if (m.role === 'system'    && m.content?.includes('Evaluación'))      return false;
-          // Eliminar el mensaje de usuario que disparó el test (solo la última ocurrencia)
           if (m.role === 'user' && !triggerRemoved && triggerContent && m.content === triggerContent) {
-            triggerRemoved = true;
-            return false;
+            triggerRemoved = true; return false;
           }
-          // Eliminar respuesta del LLM que anunciaba el inicio del test
           if (m.role === 'assistant' && m.content && (
             m.content.includes('iniciando la evaluación') ||
             m.content.includes('Iniciando la evaluación') ||
@@ -224,52 +205,37 @@ async function executeTool(name, args, ctx) {
           return true;
         });
         ctx.testDoneThisSession = true;
-        ctx.activeRunner = null;  // limpiar ANTES de emitir para evitar suppress TTS
+        ctx.activeRunner = null;
 
-        // Inyectar contexto para que el LLM sepa lo que ocurrió al retomar la conversación
-        ctx.dialog.push({ role: 'system', content: 'La evaluación cognitiva 6CIT acaba de completarse con éxito. Retoma la conversación normal con el paciente sobre cualquier tema que él desee.' });
+        ctx.dialog.push({ role: 'system', content: 'La evaluación cognitiva 6CIT acaba de completarse con éxito. Retoma la conversación normal.' });
 
-        // ── Emitir frase de cierre/retoma directamente via TTS (sin LLM) ──
-        // El LLM tiende a ignorar el resumePrompt y saludar de nuevo.
-        // La frase hardcoded garantiza el comportamiento correcto.
         const resumeText = result.status === 'cancelled'
           ? 'Hemos detenido la evaluación. Muchas gracias por su participación. ¿Hay algo en lo que pueda ayudarle?'
-          : 'Hemos terminado la evaluación. Muchas gracias por su participación. ¿Tiene alguna pregunta o hay algún tema en el que pueda ayudarle?';
+          : 'Hemos terminado la evaluación. Muchas gracias por su participación. ¿Tiene alguna pregunta?';
 
         ctx.socket.emit('assistant_text',      { delta: resumeText });
         ctx.socket.emit('assistant_text_done', { text: resumeText });
-        // Agregar al diálogo como mensaje de ALMA para mantener coherencia
         ctx.dialog.push({ role: 'assistant', content: resumeText });
-
         ctx.conversationActive = true;
-        console.log(`🔄 [Test] Post-test: frase de cierre emitida, conversación activa`);
-
-        // Notificar al cliente que el test terminó y restablecer estado del modo
         ctx.socket.emit('test_finished');
         if (ctx.conversationMode === 'wake_per_turn') {
           ctx.socket.emit('conversation_mode_state', { listeningForTurn: false, waitingForWakeWord: true });
         }
-
-        // TTS en background — no bloquea
         synthesizeSpeech(resumeText).then(buf => {
           if (buf) ctx.socket.emit('tts_audio', { audio: buf.toString('base64'), mimeType: 'audio/wav' });
         }).catch(e => console.error('❌ TTS post-test:', e.message));
 
       } catch (e) {
         if (e instanceof CancelledError) {
-          console.log(`⚠️  [Test] ${testId} cancelado por el paciente`);
           ctx.activeRunner = null;
           ctx.testDoneThisSession = true;
           ctx.conversationActive  = true;
-          ctx.dialog.push({ role: 'system', content: 'La evaluación cognitiva fue detenida por el paciente. Retoma la conversación normal con amabilidad.' });
+          ctx.dialog.push({ role: 'system', content: 'La evaluación cognitiva fue detenida por el paciente. Retoma la conversación.' });
           const cancelText = 'Hemos detenido la evaluación. No se preocupe. ¿Hay algo en lo que pueda ayudarle?';
           ctx.socket.emit('assistant_text',      { delta: cancelText });
           ctx.socket.emit('assistant_text_done', { text: cancelText });
           ctx.dialog.push({ role: 'assistant', content: cancelText });
           ctx.socket.emit('test_finished');
-          if (ctx.conversationMode === 'wake_per_turn') {
-            ctx.socket.emit('conversation_mode_state', { listeningForTurn: false, waitingForWakeWord: true });
-          }
           synthesizeSpeech(cancelText).then(buf => {
             if (buf) ctx.socket.emit('tts_audio', { audio: buf.toString('base64'), mimeType: 'audio/wav' });
           }).catch(console.error);
@@ -280,7 +246,6 @@ async function executeTool(name, args, ctx) {
       }
     });
 
-    // Marcar que el test está iniciando — askLLM suprimirá su TTS
     ctx._testJustStarted = true;
     return `Iniciando evaluación ${testId}. El sistema tomará control del flujo de voz.`;
   }
@@ -289,8 +254,6 @@ async function executeTool(name, args, ctx) {
 }
 
 /** ======================= Detección de test manual ======================= */
-// Patrones que indican que el LLM está intentando administrar un test cognitivo
-// por sí mismo en lugar de llamar a conduct_test.
 const MANUAL_TEST_RE = [
   /en qu[eé] a[nñ]o estamos/i,
   /en qu[eé] mes estamos/i,
@@ -312,9 +275,7 @@ function looksLikeManualTest(text) {
 }
 
 /** ======================= LLM streaming + tool use ======================= */
-
-// Drains a streaming Ollama response and returns { streamText, toolCall }.
-async function streamLLMResponse(resp, socket, logFirstToken) {
+async function streamLLMResponse(resp, socket, logFirstToken, onFirstToken) {
   const reader  = resp.body.getReader();
   const decoder = new TextDecoder();
   let buf = '', streamText = '', toolCall = null, firstToken = true;
@@ -332,7 +293,12 @@ async function streamLLMResponse(resp, socket, logFirstToken) {
       try { data = JSON.parse(line); } catch { continue; }
       if (data.message?.content) {
         const delta = data.message.content;
-        if (firstToken) { logFirstToken(); firstToken = false; }
+        if (firstToken) {
+          logFirstToken();
+          firstToken = false;
+          // ── MARCA: primer carácter del LLM ──
+          if (typeof onFirstToken === 'function') onFirstToken(Date.now());
+        }
         streamText += delta;
         socket.emit('assistant_text', { delta });
       }
@@ -342,7 +308,6 @@ async function streamLLMResponse(resp, socket, logFirstToken) {
   return { streamText, toolCall };
 }
 
-// Executes a tool call and appends the assistant/tool messages to dialog.
 async function dispatchToolCall(toolCall, dialog, sessionId, ctx) {
   const fnName = toolCall.function?.name;
   const fnArgs = toolCall.function?.arguments || {};
@@ -384,7 +349,15 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
     if (!resp.ok || !resp.body) throw new Error(`LLM HTTP ${resp.status}`);
 
     const logFirstToken = () => console.log(`⏱️  [LLM ] primer token → ${Date.now() - _t0llm}ms`);
-    const { streamText, toolCall } = await streamLLMResponse(resp, socket, logFirstToken);
+
+    // Callback para marcar el primer token en el turno actual
+    const onFirstToken = (ts) => {
+      if (ctx?.currentTurnMarks && !ctx.currentTurnMarks.llm_first_char) {
+        ctx.currentTurnMarks.llm_first_char = ts;
+      }
+    };
+
+    const { streamText, toolCall } = await streamLLMResponse(resp, socket, logFirstToken, onFirstToken);
 
     if (toolCall) {
       await dispatchToolCall(toolCall, dialog, sessionId, ctx);
@@ -394,9 +367,8 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
     fullResponse = streamText;
     console.log(`⏱️  [LLM ] respuesta completa (${fullResponse.length} chars) → ${Date.now() - _t0llm}ms`);
 
-    // ── Guardia: ¿el LLM intentó administrar un test cognitivo manualmente? ──
     if (ctx && !ctx.testDoneThisSession && !ctx.activeRunner && looksLikeManualTest(fullResponse)) {
-      console.warn('⚠️  [LLM ] Test manual detectado — interceptando y disparando conduct_test');
+      console.warn('⚠️  [LLM ] Test manual detectado — interceptando');
       fullResponse = '';
       socket.emit('assistant_text_done', { text: '' });
       socket.emit('assistant_status', { status: 'idle' });
@@ -415,6 +387,7 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
   socket.emit('assistant_text_done', { text: fullResponse });
   socket.emit('assistant_status',    { status: 'idle' });
 
+  // ── Comprimir contexto si supera umbral ──
   const now60 = Date.now();
   if (ctx && sessionId && messageOps.countForSession(sessionId) > COMPRESS_THRESHOLD
       && now60 - ctx._lastCompressed > 60000) {
@@ -422,16 +395,37 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
     compressContext(sessionId, dialog, patient).catch(console.error);
   }
 
+  // ── TTS ──
   const suppressTTS = ctx?._testJustStarted || ctx?.activeRunner;
   if (ctx) ctx._testJustStarted = false;
 
   if (fullResponse.trim() && !suppressTTS) {
-    const ttsPromise = synthesizeSpeech(fullResponse).then(audioBuf => {
+    // ── MARCA: inicio TTS ──
+    if (ctx?.currentTurnMarks) {
+      ctx.currentTurnMarks.tts_start = Date.now();
+    }
+    synthesizeSpeech(fullResponse).then(audioBuf => {
+      // ── CIERRE del turno actual: guardar marks ──
+      if (ctx?.currentTurnMarks?.asr_final && ctx?.currentTurnMarks?.llm_first_char) {
+        const m = ctx.currentTurnMarks;
+        ctx.convTurns.push({
+          turno:          ctx.convTurns.length + 1,
+          text:           m.text,
+          asr_final:      m.asr_final,
+          llm_first_char: m.llm_first_char,
+          tts_start:      m.tts_start,
+          L_llm_ms:       m.llm_first_char - m.asr_final,
+          L_tts_ms:       m.tts_start ? m.tts_start - m.asr_final : null,
+        });
+        ctx.currentTurnMarks = null;
+      }
       if (audioBuf) socket.emit('tts_audio', { audio: audioBuf.toString('base64'), mimeType: 'audio/wav' });
-    }).catch(e => console.error('❌ TTS pipeline:', e.message));
-    if (ctx) ctx._pendingTTS = ttsPromise;
-  } else if (suppressTTS && fullResponse.trim()) {
-    console.log('🔇 [LLM ] TTS suprimido — runner activo');
+    }).catch(e => {
+      ctx.currentTurnMarks = null; // limpiar aunque falle TTS
+      console.error('❌ TTS pipeline:', e.message);
+    });
+  } else {
+    ctx.currentTurnMarks = null; // limpiar si no hay TTS
   }
 
   return fullResponse;
@@ -454,12 +448,10 @@ async function compressContext(sessionId, dialog, patient) {
     const summary = d.message?.content?.trim();
     if (summary) {
       sessionOps.saveSummary(sessionId, summary);
-      // Truncar el dialog en memoria: conservar system + resumen + últimos 10 mensajes
       const systemMsg  = dialog[0];
       const recent     = dialog.slice(-10);
       const summaryMsg = { role: 'system', content: `[Resumen de la conversación anterior]: ${summary}` };
       dialog.splice(0, dialog.length, systemMsg, summaryMsg, ...recent);
-      console.log(`🗜️  Contexto comprimido: ${sessionId} (dialog reducido a ${dialog.length} msgs)`);
     }
   } catch (e) { console.error('❌ Compresión:', e.message); }
 }
@@ -477,26 +469,30 @@ class SessionContext {
     this.isRecording        = false;
     this.conversationActive = false;
     this.userBuffer         = '';
-    this.wavWriter          = null;
     this.lastPartial        = '';
     this.chunksReceived     = 0;
     this.firstChunkTime     = null;
-    this.activeRunner       = null;   // TestRunner activo, null si no hay test en curso
-    this._testJustStarted   = false;  // flag para suprimir TTS del LLM al iniciar test
-    this.testDoneThisSession  = false; // flag para bloquear conduct_test post-test
-    this._byeCooldown         = false; // bloquear STT extra tras despedida
-    this._lastCompressed      = 0;    // timestamp de la última compresión (cooldown 60s)
-    // Modo de conversación
-    this.conversationMode  = 'always_on'; // 'always_on' | 'wake_per_turn'
-    this.listeningForTurn  = false;       // true mientras el turno "ok alma" está activo
-    this.turnBuffer        = '';          // acumula STT durante el turno activo
-    this._turnTimer        = null;        // timer de silencio para cerrar el turno
-    // VAD state (solo activo durante test)
+    this.activeRunner       = null;
+    this._testJustStarted   = false;
+    this.testDoneThisSession  = false;
+    this._byeCooldown         = false;
+    this._lastCompressed      = 0;
+    this.conversationMode  = 'always_on';
+    this.listeningForTurn  = false;
+    this.turnBuffer        = '';
+    this._turnTimer        = null;
     this.vadEnabled         = false;
     this.vadIsSpeaking      = false;
     this.vadSilenceTimer    = null;
-    this.vadSilenceMs       = 1800;   // ms de silencio para declarar fin de habla
-    this.vadSpeechThreshold = 800;    // RMS mínimo para considerar habla (0–32767)
+    this.vadSilenceMs       = VAD_SILENCE_MS;
+    this.vadSpeechThreshold = VAD_SPEECH_THRESHOLD;
+
+    // ── Grabación por conversación ──────────────────────────────────────────
+    this.convWavWriter    = null;   // wav.FileWriter activo solo entre hola/adiós
+    this.convStartedAt    = null;   // timestamp de "hola alma"
+    this.convTurns        = [];     // array de marks por turno
+    this.currentTurnMarks = null;   // marks del turno en curso
+    this._convWavPath     = null;   // ruta del WAV actual (para el JSON)
   }
 
   createVoskRec() {
@@ -509,43 +505,99 @@ class SessionContext {
     if (this.voskRec) { try { this.voskRec.free(); } catch {} this.voskRec = null; }
   }
 
-  startWavWriter() {
-    if (!SAVE_AUDIO) return;
-    const filename = path.join(audioDir, `audio_${this.socket.id}_${Date.now()}.wav`);
-    this.wavWriter = new wav.FileWriter(filename, { sampleRate: 16000, channels: 1, bitDepth: 16 });
-    this.wavWriter.on('error', e => console.error('❌ WAV writer:', e.message));
-  }
+  // ── Inicia grabación al detectar "hola alma" ────────────────────────────
+  startConversationRecording() {
+    this.convStartedAt    = Date.now();
+    this.convTurns        = [];
+    this.currentTurnMarks = null;
 
-  endWavWriter() {
-    if (this.wavWriter) { try { this.wavWriter.end(); } catch {} this.wavWriter = null; }
-  }
-
-  writeAudioChunk(buf) {
-    if (SAVE_AUDIO && this.wavWriter && this.isRecording) {
-      try { this.wavWriter.write(buf); } catch (e) { console.error('❌ Write chunk:', e.message); }
+    if (SAVE_AUDIO) {
+      const ts       = this.convStartedAt;
+      const pid      = this.patient.id.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const wavName  = `conv_${pid}_${ts}.wav`;
+      this._convWavPath = path.join(audioDir, wavName);
+      this.convWavWriter = new wav.FileWriter(this._convWavPath, {
+        sampleRate: 16000, channels: 1, bitDepth: 16
+      });
+      this.convWavWriter.on('error', e => console.error('❌ Conv WAV:', e.message));
+      console.log(`🎙️  [Conv] Grabación iniciada: ${wavName}`);
     }
   }
 
-  /**
-   * Procesa un chunk PCM16 para detección de actividad de voz (VAD).
-   * Solo opera cuando vadEnabled=true (durante espera de respuesta larga en test).
-   * Llama a activeRunner.onVadSpeech() / onVadSilence() según corresponda.
-   */
+  // ── Cierra grabación y guarda JSON al detectar "adiós alma" ────────────
+  endConversationRecording() {
+    if (!this.convStartedAt) return; // no había conversación activa
+
+    const endedAt = Date.now();
+
+    // Cerrar WAV
+    if (this.convWavWriter) {
+      try { this.convWavWriter.end(); } catch {}
+      this.convWavWriter = null;
+    }
+
+    // Construir JSON de traza
+    const validTurns = this.convTurns.filter(t => t.asr_final && t.llm_first_char);
+    const lastTurn   = validTurns.at(-1);
+
+    const trace = {
+      socketId:   this.socket.id,
+      patientId:  this.patient.id,
+      patientName: this.patient.name,
+      sessionId:  this.sessionId,
+      startedAt:  this.convStartedAt,
+      endedAt,
+      durationMs: endedAt - this.convStartedAt,
+      audioFile:  this._convWavPath ? path.basename(this._convWavPath) : null,
+      turns:      validTurns,
+      // Compatibilidad con analizar_latencia.js (último turno)
+      marks: lastTurn ? {
+        asr_final:      lastTurn.asr_final,
+        llm_first_char: lastTurn.llm_first_char,
+        tts_start:      lastTurn.tts_start,
+      } : null,
+    };
+
+    // Guardar JSON (siempre, independiente de SAVE_AUDIO)
+    const pid     = this.patient.id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const jsonName = `conv_${pid}_${this.convStartedAt}.json`;
+    const jsonPath = path.join(audioDir, jsonName);
+    try {
+      fs.writeFileSync(jsonPath, JSON.stringify(trace, null, 2));
+      console.log(`📄 [Conv] Traza guardada: ${jsonName} (${validTurns.length} turnos)`);
+      if (validTurns.length > 0) {
+        const llmLats = validTurns.map(t => t.L_llm_ms).filter(Boolean);
+        const p95 = llmLats.sort((a,b)=>a-b)[Math.ceil(0.95*llmLats.length)-1];
+        console.log(`⏱️  [Conv] Latencia LLM — p95: ${Math.round(p95)}ms (${llmLats.length} turnos)`);
+      }
+    } catch(e) {
+      console.error('❌ [Conv] Error guardando traza:', e.message);
+    }
+
+    // Limpiar estado
+    this.convStartedAt    = null;
+    this.convTurns        = [];
+    this.currentTurnMarks = null;
+    this._convWavPath     = null;
+  }
+
+  // ── Escribe audio PCM al WAV de conversación (si está activa) ──────────
+  writeConvAudio(buf) {
+    if (this.convWavWriter && this.conversationActive) {
+      try { this.convWavWriter.write(buf); } catch {}
+    }
+  }
+
   processVAD(int16Array) {
     if (!this.vadEnabled || !this.activeRunner) return;
-
-    // Calcular RMS del chunk
     let sum = 0;
     for (const sample of int16Array) sum += sample * sample;
     const rms = Math.sqrt(sum / int16Array.length);
-
     if (rms >= this.vadSpeechThreshold) {
-      // Hay habla
       if (!this.vadIsSpeaking) {
         this.vadIsSpeaking = true;
         this.activeRunner.onVadSpeech?.();
       }
-      // Resetear timer de silencio
       clearTimeout(this.vadSilenceTimer);
       this.vadSilenceTimer = setTimeout(() => {
         if (this.vadEnabled && this.vadIsSpeaking) {
@@ -565,8 +617,6 @@ class SessionContext {
 }
 
 /** ======================= Comandos de voz ======================= */
-
-// Maneja el flujo wake_per_turn extraído para reducir complejidad de processVoiceCommands.
 function handleWakePerTurn(t, ctx) {
   if (t.includes('ok alma') || t.includes('oye alma')) {
     const rest = t.split(/ok alma|oye alma/).pop()?.trim() ?? '';
@@ -588,10 +638,8 @@ function handleWakePerTurn(t, ctx) {
 function processVoiceCommands(text, ctx) {
   const t = text.toLowerCase().trim();
 
-  // ── Activación de sesión ("Hola ALMA") ────────────────────────────────────
   if (t.includes('hola alma')) {
     if (!ctx.conversationActive) {
-      // En wake_per_turn no procesar texto tras "hola alma" como pregunta: solo saludar
       const question = ctx.conversationMode === 'always_on'
         ? (t.split('hola alma')[1]?.trim() || '')
         : '';
@@ -599,47 +647,36 @@ function processVoiceCommands(text, ctx) {
       if (question) { ctx.dialog.push({ role: 'user', content: question }); messageOps.add(ctx.sessionId, 'user', question); }
       return { isCommand: true, action: 'start_conversation', question, greet: !question };
     }
-    // Conversación ya activa: ignorar re-activación accidental (duplicado Vosk)
-    // Si hay texto adicional tras "hola alma", procesarlo como continuación normal
     const rest = t.split('hola alma').pop()?.trim() || '';
     if (!rest) return { isCommand: false, action: null };
     ctx.userBuffer += (ctx.userBuffer ? ' ' : '') + rest;
     return { isCommand: false, action: 'continue_conversation' };
   }
 
-  // ── Fin de sesión ("Gracias ALMA", etc.) ─────────────────────────────────
-  const stopCmds = ['gracias alma', 'detente alma', 'adiós alma', 'hasta luego alma', 'para alma'];
+  const stopCmds = ['gracias alma', 'detente alma', 'adiós alma', 'adios alma', 'hasta luego alma', 'para alma'];
   if (stopCmds.some(c => t.includes(c)) && ctx.conversationActive) {
     ctx.conversationActive = false;
     ctx.userBuffer = '';
-    // Limpiar turno activo si lo hay
     clearTimeout(ctx._turnTimer);
     ctx.listeningForTurn = false;
     ctx.turnBuffer = '';
     return { isCommand: true, action: 'stop_conversation', farewell: true };
   }
 
-  // ── Modo wake_per_turn ────────────────────────────────────────────────────
   if (ctx.conversationMode === 'wake_per_turn' && ctx.conversationActive) {
     return handleWakePerTurn(t, ctx);
   }
 
-  // ── Modo always_on ────────────────────────────────────────────────────────
   if (ctx.conversationActive && t) {
     ctx.userBuffer += (ctx.userBuffer ? ' ' : '') + t;
     return { isCommand: false, action: 'continue_conversation' };
   }
 
   if (!ctx.conversationActive && t) ctx.userBuffer += (ctx.userBuffer ? ' ' : '') + t;
-
   return { isCommand: false, action: null };
 }
 
 /** ======================= Flush de turno (wake_per_turn) ======================= */
-/**
- * Cierra el turno activo: envía el texto acumulado al LLM y resetea el estado.
- * Se llama desde el timer de silencio o por get_final_transcription.
- */
 async function flushTurn(ctx) {
   const text   = ctx.turnBuffer.trim();
   const socket = ctx.socket;
@@ -647,69 +684,69 @@ async function flushTurn(ctx) {
   ctx.turnBuffer       = '';
   ctx._turnTimer       = null;
   socket.emit('conversation_mode_state', { listeningForTurn: false });
-
   if (!text) return;
-  console.log(`🎤 [Turn] Turno cerrado: "${text.slice(0, 60)}"`);
   ctx.dialog.push({ role: 'user', content: text });
   messageOps.add(ctx.sessionId, 'user', text);
-
   await askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error);
-
-  // Tras responder, volver a estado de espera de wake word
   if (ctx.conversationActive && ctx.conversationMode === 'wake_per_turn') {
     socket.emit('conversation_mode_state', { listeningForTurn: false, waitingForWakeWord: true });
   }
 }
 
 /** ======================= Audio chunk helpers ======================= */
-
 function parseAudioChunk(raw) {
   if (Buffer.isBuffer(raw)) {
-    // raw.buffer is Node's shared pool — byteOffset may not be 2-byte aligned.
-    // Copy to a fresh ArrayBuffer to guarantee alignment for Int16Array.
     const ab = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
     return new Int16Array(ab);
   }
-  return new Int16Array(raw); // ArrayBuffer or plain Array (legacy ScriptProcessor)
+  return new Int16Array(raw);
 }
 
-function applyNoiseGate(int16, audioBuf, threshold = 150) {
+function applyNoiseGate(int16, audioBuf, threshold = NOISE_GATE_THRESHOLD) {
   let sum = 0;
   for (const sample of int16) sum += sample * sample;
   return Math.sqrt(sum / int16.length) < threshold ? Buffer.alloc(audioBuf.length) : audioBuf;
 }
 
-// Palabras en inglés que nunca aparecerían en conversación natural en español.
-// Si ≥2 de estas aparecen en un enunciado corto, es ruido/transcripción errónea.
 const ENGLISH_NOISE_RE = /\b(want|try|the\b|and\b|with|have|from|they|what|when|where|would|should|could|their|there|here|just|like|that|this|then|than|been|some|more|also|only|back|come|look|make|know|good|much|need|many|well|very|after|said|even|most|made|take|work|call|thing|place|case|week|year|time|your|our\b|his\b|her\b|him\b|its\b)\b/gi;
 
 function isConversationNoise(text) {
   const t = (text || '').trim();
   if (!t) return true;
-  // Sonidos puros / interjecciones sin contenido
-  if (/^(e+m+|a+h+|u+h+|hm+|mm+|eh+|ah+|uh+|oh+)\s*$/i.test(t)) return true;
-  // ≥2 palabras claramente inglesas en una frase corta → transcripción basura
+
+  // Demasiado corto para ser una frase real
+  if (t.length < MIN_TRANSCRIPT_LENGTH) return true;
+
+  // Una sola palabra muy corta: probable ruido o sílaba suelta de Vosk
   const words = t.split(/\s+/);
+  if (words.length === 1 && t.length <= 3) return true;
+
+  // Vocales sueltas que Vosk genera con ruido de fondo (ej: "a", "ee", "uu")
+  if (/^[aeiouáéíóúü]{1,3}$/i.test(t)) return true;
+
+  // Sonidos puros / interjecciones sin contenido semántico
+  if (/^(e+m+|a+h+|u+h+|hm+|mm+|eh+|ah+|uh+|oh+|aa+|ee+|oo+)\s*$/i.test(t)) return true;
+
+  // Repetición de la misma sílaba (artefacto de Vosk con ruido continuo)
+  if (/^(\w{1,3})\s+\1(\s+\1)*$/i.test(t)) return true;
+
+  // ≥2 palabras claramente inglesas en una frase corta → transcripción basura
   if (words.length <= 7) {
     const hits = t.match(ENGLISH_NOISE_RE);
     if (hits && hits.length >= 2) return true;
   }
+
   return false;
 }
 
 function handleVoiceCommand(cmd, txt, ctx, socket) {
   socket.emit('voice_command_detected', { action: cmd.action, text: txt });
-  if (cmd.action === 'stop_conversation' && cmd.farewell) {
-    ctx._byeCooldown = true;
-    const byeText = '¡Hasta pronto! Que tenga un buen día.';
-    socket.emit('assistant_text',      { delta: byeText });
-    socket.emit('assistant_text_done', { text: byeText });
-    synthesizeSpeech(byeText).then(buf => {
-      if (buf) socket.emit('tts_audio', { audio: buf.toString('base64'), mimeType: 'audio/wav' });
-    }).catch(console.error);
-    setTimeout(() => { if (ctx) ctx._byeCooldown = false; }, 4000);
-  }
+
+  // ── INICIO de conversación ──────────────────────────────────────────────
   if (cmd.action === 'start_conversation') {
+    // Iniciar grabación WAV + traza JSON
+    ctx.startConversationRecording();
+
     if (cmd.question) {
       setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error), 300);
     } else {
@@ -718,6 +755,37 @@ function handleVoiceCommand(cmd, txt, ctx, socket) {
       setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error), 300);
     }
   }
+
+  // ── FIN de conversación ─────────────────────────────────────────────────
+  if (cmd.action === 'stop_conversation' && cmd.farewell) {
+    ctx._byeCooldown = true;
+    const byeText = '¡Hasta pronto! Que tenga un buen día.';
+    socket.emit('assistant_text',      { delta: byeText });
+    socket.emit('assistant_text_done', { text: byeText });
+
+    synthesizeSpeech(byeText).then(buf => {
+      if (buf) socket.emit('tts_audio', { audio: buf.toString('base64'), mimeType: 'audio/wav' });
+    }).catch(console.error);
+
+    // Cerrar grabación y guardar archivos (con pequeño delay para capturar audio de despedida)
+    setTimeout(() => {
+      ctx.endConversationRecording();
+    }, 2000);
+
+    // Resetear contexto conversacional para la próxima sesión.
+    // Conservar solo el system prompt para que el próximo "hola alma" empiece limpio.
+    setTimeout(() => {
+      if (!ctx) return;
+      const systemPrompt = ctx.dialog.find(m => m.role === 'system');
+      if (systemPrompt) {
+        ctx.dialog = [{ role: 'system', content: systemPrompt.content }];
+      }
+      ctx.testDoneThisSession = false;
+      ctx._byeCooldown = false;
+      console.log(`🔄 [Conv] Contexto reseteado — ${ctx.patient?.name}`);
+    }, 4000);
+  }
+
   if (cmd.action === 'turn_start') {
     socket.emit('conversation_mode_state', { listeningForTurn: true });
   }
@@ -742,7 +810,6 @@ io.on('connection', socket => {
     const dbSession    = sessionOps.getLatestForPatient(patientId);
     const isNewSession = !dbSession || dbSession.ended_at !== null;
     let sessionId;
-
     if (isNewSession) { sessionId = sessionOps.create(patientId, socket.id); }
     else              { sessionId = dbSession.id; sessionOps.updateSocket(sessionId, socket.id); }
 
@@ -769,17 +836,18 @@ io.on('connection', socket => {
     if (!ctx.firstChunkTime) ctx.firstChunkTime = Date.now();
     ctx.chunksReceived++;
 
-    // data.chunk: ArrayBuffer/Buffer (AudioWorklet) or plain Array (legacy ScriptProcessor)
     const int16    = parseAudioChunk(data.chunk);
     const audioBuf = Buffer.from(int16.buffer);
-    ctx.writeAudioChunk(audioBuf);
-    ctx.processVAD(int16);   // VAD solo activo cuando runner lo habilita
+
+    // ── Escribir al WAV de conversación (solo si la conversación está activa) ──
+    ctx.writeConvAudio(audioBuf);
+
+    ctx.processVAD(int16);
     if (!isVoskReady || !ctx.voskRec) return;
 
-    // Noise gate: enviar silencio a Vosk si el RMS es bajo (no afecta al VAD).
     const bufToFeed = applyNoiseGate(int16, audioBuf);
+    const _t0stt    = Date.now();
 
-    const _t0stt = Date.now();
     if (ctx.voskRec.acceptWaveform(bufToFeed)) {
       const r   = ctx.voskRec.result();
       const txt = (r.text || '').trim();
@@ -794,18 +862,25 @@ io.on('connection', socket => {
       }
 
       const cmd = processVoiceCommands(txt, ctx);
+
       if (cmd.isCommand) {
         handleVoiceCommand(cmd, txt, ctx, socket);
       } else if (cmd.action === 'continue_conversation' && txt.trim()) {
         if (isConversationNoise(txt)) {
           console.log(`🔇 [Conv] STT descartado (ruido): "${txt.slice(0, 40)}"`);
         } else {
+          // ── MARCA: fin de turno ASR ──────────────────────────────────────
+          ctx.currentTurnMarks = {
+            text:           txt,
+            asr_final:      Date.now(),
+            llm_first_char: null,
+            tts_start:      null,
+          };
           ctx.dialog.push({ role: 'user', content: txt });
           messageOps.add(ctx.sessionId, 'user', txt);
           setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error), 300);
         }
       }
-      // cmd.action === 'turn_accumulate': flushTurn maneja el envío via timer
     } else {
       const partial = (ctx.voskRec.partialResult().partial || '').trim();
       if (partial && partial !== ctx.lastPartial) {
@@ -821,21 +896,21 @@ io.on('connection', socket => {
     const txt = (ctx.voskRec.finalResult().text || '').trim();
     if (!txt) return;
     socket.emit('transcription', { text: txt, isFinal: true });
-
-    // Si hay un test activo, redirigir
-    if (ctx.activeRunner) {
-      ctx.activeRunner.resolveSTT(txt);
-      return;
-    }
-
+    if (ctx.activeRunner) { ctx.activeRunner.resolveSTT(txt); return; }
     if (ctx.conversationActive) {
       if (ctx.conversationMode === 'wake_per_turn') {
-        // Forzar cierre del turno si hay contenido acumulado
         if (ctx.listeningForTurn && ctx.turnBuffer.trim()) {
           clearTimeout(ctx._turnTimer);
           flushTurn(ctx);
         }
       } else {
+        // ── MARCA: fin de turno ASR ──────────────────────────────────────
+        ctx.currentTurnMarks = {
+          text:           txt,
+          asr_final:      Date.now(),
+          llm_first_char: null,
+          tts_start:      null,
+        };
         ctx.dialog.push({ role: 'user', content: txt });
         messageOps.add(ctx.sessionId, 'user', txt);
         setTimeout(() => askLLM(socket, ctx.dialog, ctx.sessionId, ctx.patient, ctx).catch(console.error), 300);
@@ -849,25 +924,26 @@ io.on('connection', socket => {
     const ctx = activeSessions.get(socket.id);
     if (!ctx) { socket.emit('audio_error', { error: 'Identifícate primero.' }); return; }
     ctx.isRecording = true;
-    ctx.startWavWriter();
     socket.emit('assistant_status', { status: 'idle' });
-    console.log(`🎙️  Recording start: ${ctx.patient.name}`);
+    console.log(`🎙️  Micrófono abierto: ${ctx.patient.name}`);
   });
 
   socket.on('stop_recording', () => {
     const ctx = activeSessions.get(socket.id);
     if (ctx) {
       ctx.isRecording = false;
-      ctx.endWavWriter();
-      // Solo detiene el micrófono — no cancela el test ni finaliza la sesión
-      console.log(`⏹️  Recording stop: ${ctx.patient.name}`);
+      // Si la conversación seguía activa cuando se detuvo el micrófono, cerrar también la traza
+      if (ctx.conversationActive) {
+        ctx.conversationActive = false;
+        ctx.endConversationRecording();
+      }
+      console.log(`⏹️  Micrófono cerrado: ${ctx.patient.name}`);
     }
   });
 
   socket.on('set_conversation_mode', ({ mode }) => {
     const ctx = activeSessions.get(socket.id);
     if (!ctx || !['always_on', 'wake_per_turn'].includes(mode)) return;
-    // Limpiar turno activo al cambiar de modo
     clearTimeout(ctx._turnTimer);
     ctx.listeningForTurn = false;
     ctx.turnBuffer       = '';
@@ -897,7 +973,11 @@ io.on('connection', socket => {
     clearInterval(statsInterval);
     const ctx = activeSessions.get(socket.id);
     if (ctx) {
-      ctx.endWavWriter();
+      // Guardar traza si la conversación quedó abierta al desconectar
+      if (ctx.conversationActive || ctx.convStartedAt) {
+        ctx.conversationActive = false;
+        ctx.endConversationRecording();
+      }
       ctx.freeVoskRec();
       if (ctx.activeRunner) ctx.activeRunner.destroy();
       if (ctx.sessionId) sessionOps.end(ctx.sessionId);
@@ -929,10 +1009,8 @@ app.get('/patients/:id', (req,  res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.put('/patients/:id', (req, res) => {
-  try {
-    patientOps.update(req.params.id, req.body);
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  try { patientOps.update(req.params.id, req.body); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.delete('/patients/:id', (req, res) => {
   try { patientOps.delete(req.params.id); res.json({ ok: true }); }
@@ -956,43 +1034,61 @@ app.get('/stats', (_req, res) => res.json({
 }));
 app.get('/test', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
+// ── API: listar trazas de conversación ──────────────────────────────────────
+app.get('/conversations', (_req, res) => {
+  try {
+    const files = fs.readdirSync(audioDir)
+      .filter(f => f.startsWith('conv_') && f.endsWith('.json'))
+      .sort().reverse().slice(0, 50);
+    const list = files.map(f => {
+      try {
+        const d = JSON.parse(fs.readFileSync(path.join(audioDir, f), 'utf8'));
+        const turns = d.turns || [];
+        const llmLats = turns.map(t => t.L_llm_ms).filter(Boolean);
+        return {
+          file:       f,
+          patientId:  d.patientId,
+          startedAt:  d.startedAt,
+          durationMs: d.durationMs,
+          turns:      turns.length,
+          p50_llm:    llmLats.length ? Math.round(llmLats.sort((a,b)=>a-b)[Math.floor(llmLats.length*0.5)]) : null,
+          p95_llm:    llmLats.length ? Math.round(llmLats.sort((a,b)=>a-b)[Math.ceil(llmLats.length*0.95)-1]) : null,
+        };
+      } catch { return { file: f, error: 'parse error' }; }
+    });
+    res.json(list);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/conversations/:filename', (req, res) => {
+  try {
+    const fpath = path.join(audioDir, path.basename(req.params.filename));
+    if (!fs.existsSync(fpath)) return res.status(404).json({ error: 'No encontrado.' });
+    res.json(JSON.parse(fs.readFileSync(fpath, 'utf8')));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 /** ======================= Debug (solo desarrollo) ======================= */
 if (process.env.NODE_ENV !== 'production') {
-  // DELETE /debug/evals/:patientId/today  → borra evaluaciones de hoy
   app.delete('/debug/evals/:patientId/today', (req, res) => {
-    try {
-      evaluationOps.deleteForPatientToday(req.params.patientId);
-      res.json({ ok: true, message: `Evaluaciones de hoy borradas para ${req.params.patientId}` });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    try { evaluationOps.deleteForPatientToday(req.params.patientId); res.json({ ok: true, message: `Evaluaciones de hoy borradas para ${req.params.patientId}` }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
   });
-
-  // DELETE /debug/evals/:patientId/all  → borra TODAS las evaluaciones del paciente
   app.delete('/debug/evals/:patientId/all', (req, res) => {
-    try {
-      evaluationOps.deleteAllForPatient(req.params.patientId);
-      res.json({ ok: true, message: `Todas las evaluaciones borradas para ${req.params.patientId}` });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    try { evaluationOps.deleteAllForPatient(req.params.patientId); res.json({ ok: true, message: `Todas las evaluaciones borradas para ${req.params.patientId}` }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
   });
-
-  // DELETE /debug/evals/id/:evalId  → borra una evaluación específica por id
   app.delete('/debug/evals/id/:evalId', (req, res) => {
-    try {
-      evaluationOps.deleteById(req.params.evalId);
-      res.json({ ok: true, message: `Evaluación ${req.params.evalId} borrada` });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    try { evaluationOps.deleteById(req.params.evalId); res.json({ ok: true, message: `Evaluación ${req.params.evalId} borrada` }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
   });
-
-  // GET /debug/evals/:patientId  → lista todas las evaluaciones (cualquier estado)
   app.get('/debug/evals/:patientId', (req, res) => {
     try {
       const rows = evaluationOps.getForPatient(req.params.patientId, 50);
       res.json({ count: rows.length, evals: rows.map(e => ({
-        id:          e.id,
-        test_id:     e.test_id,
-        status:      e.status,
-        total_score: e.total_score,
-        max_score:   e.max_score,
-        started_at:  new Date(e.started_at).toISOString()
+        id: e.id, test_id: e.test_id, status: e.status,
+        total_score: e.total_score, max_score: e.max_score,
+        started_at: new Date(e.started_at).toISOString()
       }))});
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -1003,8 +1099,6 @@ if (process.env.NODE_ENV !== 'production') {
 /** ======================= Arranque ======================= */
 async function main() {
   await initDB();
-
-  // Seed: asegurar que el paciente por defecto existe
   if (patientOps.getById(DEFAULT_PATIENT_ID)) {
     console.log(`✅ Paciente por defecto: ${DEFAULT_PATIENT_ID} (${DEFAULT_PATIENT_NAME})`);
   } else {
@@ -1012,13 +1106,12 @@ async function main() {
       'Paciente de prueba generado automáticamente para desarrollo.');
     console.log(`🌱 Paciente por defecto creado: ${DEFAULT_PATIENT_ID} (${DEFAULT_PATIENT_NAME})`);
   }
-
   const voskOk = await initVosk();
   console.log(voskOk ? '🎤 Vosk listo' : '⚠️  Vosk no disponible');
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🚀 ALMA en http://localhost:${PORT}`);
     console.log(`   SAVE_AUDIO: ${SAVE_AUDIO} | LLM: ${LLM_MODEL} | TTS: ${TTS_URL}`);
-    console.log(`   Search: ${SEARXNG_URL} | Paciente default: ${DEFAULT_PATIENT_ID}\n`);
+    console.log(`   Paciente default: ${DEFAULT_PATIENT_ID}\n`);
   });
 }
 main().catch(console.error);

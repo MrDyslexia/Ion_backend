@@ -1,4 +1,3 @@
-data/
 node_modules/
 npm-debug.log
 yarn-error.log
@@ -8,7 +7,7 @@ models/
 notas.txt
 audio/*
 bun.*
-data/
+data/*
 *.db
 INFORME_TECNICO.md
 .claude
