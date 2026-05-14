@@ -29,7 +29,7 @@
  */
 
 const { isValidResponse, isCancelIntent } = require('./ResponseValidator');
-const { synthesizeSpeech }                = require('./ttsHelper');
+const { synthesizeSpeech } = require('./ttsHelper');
 const { sleep }                           = require('./utils');
 
 const STATE = {
@@ -39,17 +39,27 @@ const STATE = {
 };
 
 // ── Timeouts ──────────────────────────────────────────────────────────────────
-const TIMEOUT_FIRST_SHORT  = 40000;  // 40s sin actividad → repetir pregunta (modo single)
-const TIMEOUT_FIRST_LONG   = 60000;  // 60s sin STT ni VAD → repetir pregunta (modo vad)
-const TIMEOUT_RETRY        = 30000;  // retry tras no_response
+const TIMEOUT_FIRST_SHORT  = 60000;  // 60s sin actividad → repetir pregunta (modo single)
+const TIMEOUT_FIRST_LONG   = 120000; // 120s sin STT ni VAD → repetir pregunta (modo vad)
+const TIMEOUT_RETRY        = 60000;  // 60s retry tras no_response
 const TIMEOUT_CONFIRM      =  8000;  // confirmación cancelación
 
 // ── Patrones de filler ────────────────────────────────────────────────────────
 const FILLER_RE = [
   /^(e+m+|a+h+|u+h+|hm+|mm+|eh+|ah+|uh+|oh+)\s*$/i,
   /^(pues|bueno|a ver|veamos|espera|dejame|déjame|vamos|vamos a ver|es que|o sea)\s*[,.]?\s*$/i,
-  /^(sí|si|no|okay|ok|vale|claro|listo)\s*$/i,
+  /^(okay|ok|vale|claro|listo)\s*$/i,
 ];
+
+// Fracción de palabras (>2 chars) compartidas entre dos fragmentos STT
+function wordOverlap(a, b) {
+  const norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9\s]/g,' ');
+  const wordsA = new Set(norm(a).split(/\s+/).filter(w => w.length > 2));
+  if (!wordsA.size) return 0;
+  const wordsB = norm(b).split(/\s+/).filter(w => w.length > 2);
+  const hits = wordsB.filter(w => wordsA.has(w)).length;
+  return hits / Math.max(wordsA.size, wordsB.length, 1);
+}
 
 // Si el texto del paciente reproduce más del 55% de palabras de la pregunta → eco
 function isQuestionEcho(text, questionText) {
@@ -62,10 +72,15 @@ function isQuestionEcho(text, questionText) {
   return overlap / tWords.length > 0.55;
 }
 
+const AFFIRMATIVE_RE = /^(sí|si|no)\s*$/i;
+
 function isFiller(text, mode) {
   const t = (text || '').trim();
+  if (AFFIRMATIVE_RE.test(t)) return false;
   if (FILLER_RE.some(p => p.test(t))) return true;
-  if (mode === 'vad' && t.split(/\s+/).length <= 2 && t.length < 12) return true;
+  // Solo filtrar fragmentos de 1 palabra muy cortos (≤3 chars): evita descartar
+  // meses ("octubre", "mayo") o números ("veinte") que el paciente dice uno a uno.
+  if (mode === 'vad' && t.split(/\s+/).length === 1 && t.length <= 3) return true;
   return false;
 }
 
@@ -81,10 +96,35 @@ const REPEAT_KEYWORDS_SYNC = [
   'no le oiste','no oiste','repitelo','repite la'
 ];
 
+const CANCEL_KEYWORDS_SYNC = [
+  'quiero salir','quiero parar','quiero detener','quiero terminar',
+  'salir del test','salir de la evaluacion','salir de la evaluacion',
+  'parar el test','terminar el test',
+  'no quiero continuar','no quiero seguir',
+  'basta','detente','cancela','cancele','suficiente','para ya'
+];
+
+function normalizeSync(t) {
+  return (t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
 function isRepeatSync(text) {
-  const t = (text || '').toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const t = normalizeSync(text);
   return REPEAT_KEYWORDS_SYNC.some(k => t.includes(k));
+}
+
+function isCancelSync(text) {
+  const t = normalizeSync(text);
+  return CANCEL_KEYWORDS_SYNC.some(k => t.includes(k));
+}
+
+// Respuestas negativas del paciente ante "¿Está listo para comenzar?"
+function _wantsStopReady(text) {
+  const t = normalizeSync(text);
+  if (/\bno\b/.test(t)) return true;
+  return ['basta','cancela','quiero salir','ahora no','luego','mañana','manana',
+          'despues','después','todavia','todavía','aun no','aún no',
+          'cansado','cansada','prefiero no','no me siento','no estoy'].some(k => t.includes(k));
 }
 
 class CancelledError extends Error {
@@ -256,8 +296,31 @@ class TestRunner {
         return;
       }
 
-      this._vadAccumulated.push(t);
-      console.log(`📥 [Runner] Acumulado (${this._vadAccumulated.length}): "${t.slice(0, 40)}"`);
+      // Cancelación sync en VAD: resolver inmediatamente para que isCancelIntent lo procese
+      if (isCancelSync(t)) {
+        console.log(`🛑 [Runner] Cancelación detectada (VAD sync): "${t.slice(0, 40)}"`);
+        clearTimeout(this._vadTimeout);
+        this.ctx.vadEnabled  = false;
+        const resolve        = this._vadResolve;
+        this._vadResolve     = null;
+        this._vadAccumulated = [];
+        this.state           = STATE.IDLE;
+        resolve({ text: t, timedOut: false });
+        return;
+      }
+
+      // Deduplicar: si el nuevo fragmento solapa >60% con el último acumulado
+      // (ej: pre-arm + re-transcripción de la misma frase), reemplazar en lugar de añadir
+      const last = this._vadAccumulated[this._vadAccumulated.length - 1];
+      if (last && wordOverlap(t, last) > 0.60) {
+        this._vadAccumulated[this._vadAccumulated.length - 1] = t;
+        console.log(`🔄 [Runner] Fragmento reemplazado (re-transcripción): "${t.slice(0, 40)}"`);
+      } else {
+        this._vadAccumulated.push(t);
+        console.log(`📥 [Runner] Acumulado (${this._vadAccumulated.length}): "${t.slice(0, 40)}"`);
+      }
+      // Nuevo fragmento STT = el paciente habló → resetear ventana de silencio
+      this.ctx.resetVadSilenceTimer?.();
       return;
     }
 
@@ -334,6 +397,9 @@ class TestRunner {
       if (!isFiller(buffered, 'vad') && !isQuestionEcho(buffered, this._currentQuestion)) {
         console.log(`📦 [Runner] Flush pre-armado (vad): "${buffered.slice(0, 40)}"`);
         this._vadAccumulated.push(buffered);
+        // El paciente ya habló antes de que empezara el VAD → arrancar el countdown de silencio
+        // Si no se hace esto, el timer nunca se arma (no llega energía nueva) y espera 120s
+        this.ctx.resetVadSilenceTimer?.();
       } else {
         console.log(`💭 [Runner] Pre-armado VAD descartado (filler/eco): "${buffered.slice(0, 40)}"`);
       }
@@ -369,14 +435,59 @@ class TestRunner {
     }
   }
 
+  // ── Espera de confirmación de inicio ─────────────────────────────────────────
+  // Pausa el test tras la introducción y espera que el paciente diga que está listo.
+  // Cualquier respuesta (o timeout) = continuar. Cancel keywords = CancelledError.
+
+  async waitForReady(timeoutMs = 12000) {
+    if (this._cancelled) throw new CancelledError();
+
+    // Si hay algo pre-buffereado (llegó durante el TTS), procesarlo ya
+    if (this._bufferedSTT) {
+      const buf = this._bufferedSTT;
+      this._bufferedSTT = null;
+      if (_wantsStopReady(buf)) throw new CancelledError();
+      return; // cualquier otra respuesta → continuar
+    }
+
+    this.state = STATE.WAITING_CONFIRM;
+    this._collectMode = 'single';
+    this.ctx.vadEnabled = true;
+
+    const result = await new Promise(resolve => {
+      this._resolve = resolve;
+      this._timeout = setTimeout(() => {
+        this._resolve = null;
+        this.ctx.vadEnabled = false;
+        this.state = STATE.IDLE;
+        resolve({ text: null, timedOut: true });
+      }, timeoutMs);
+    });
+
+    this.ctx.vadEnabled = false;
+    this.state = STATE.IDLE;
+
+    if (result.text && _wantsStopReady(result.text)) throw new CancelledError();
+    // timeout o cualquier respuesta positiva → continuar normalmente
+  }
+
+  // Descarta cualquier STT capturado en el buffer pre-armado (eco de TTS, etc.)
+  clearBuffer() {
+    this._bufferedSTT = null;
+  }
+
   // ── API pública ───────────────────────────────────────────────────────────────
 
   async waitForResponse(questionText, questionId) {
     this._currentQuestion = questionText;
 
-    const longQuestions = ['countdown', 'months_reverse'];
+    const longQuestions = ['countdown', 'months_reverse', 'address_recall', 'time'];
     const mode = longQuestions.includes(questionId) ? 'vad' : 'single';
-    const silenceMs = questionId === 'months_reverse' ? 5000 : questionId === 'countdown' ? 4500 : 3500;
+    const silenceMs = questionId === 'months_reverse' ? 9000
+                    : questionId === 'countdown'      ? 7000
+                    : questionId === 'address_recall' ? 6000
+                    : questionId === 'time'           ? 4000
+                    : 3500;
     this._allAccumulated = [];
 
     // ── Intento 1 ─────────────────────────────────────────────────────────────
@@ -387,7 +498,7 @@ class TestRunner {
     if (mode === 'vad' && first.text) this._allAccumulated.push(first.text);
 
     if (first.timedOut || !first.text) {
-      // Sin respuesta → repetir pregunta una vez
+      await this.say('Perdone, no le escuché bien. ¿Podría repetir su respuesta?');
       await this.say(questionText);
 
       const second = await this._waitWithRepeat(questionText, mode, silenceMs, TIMEOUT_RETRY);
@@ -422,7 +533,7 @@ class TestRunner {
           }
         }
       }
-      await this.say('Disculpe, no le entendí bien. ¿Puede repetir su respuesta?');
+      await this.say('Perdone, no le escuché bien. ¿Podría repetirlo?');
 
       const retry = await this._waitWithRepeat(questionText, mode, silenceMs, TIMEOUT_RETRY);
 
@@ -448,7 +559,7 @@ class TestRunner {
     // Marcar estado ANTES del TTS para que resolveSTT pueda encolar la respuesta
     this.state = STATE.WAITING_CONFIRM;
     this._confirmQueue = null;
-    await this.say('¿Desea detener la evaluación? Diga "sí" para confirmar o "no" para continuar.');
+    await this.say('¿Quiere que nos detengamos?');
 
     const confirm = await new Promise(resolve => {
       // Si el paciente respondió mientras el TTS estaba reproduciéndose, usar esa respuesta
@@ -469,7 +580,7 @@ class TestRunner {
     });
 
     if (confirm.timedOut || !confirm.text) {
-      await this.say('Continuamos con la evaluación.');
+      await this.say('Muy bien, seguimos adelante.');
       this.state = STATE.WAITING_RESPONSE;
       return;
     }
@@ -478,10 +589,10 @@ class TestRunner {
     const confirmed = ['si','sí','yes','detener','para','cancela','basta'].some(w => lower.includes(w));
 
     if (confirmed) {
-      await this.say('Entendido. Detenemos la evaluación aquí.');
+      await this.say('Entendido. Detenemos la evaluación aquí. Que se recupere bien.');
       throw new CancelledError();
     } else {
-      await this.say('Bien, continuamos.');
+      await this.say('Muy bien, continuamos.');
       this.state = STATE.WAITING_RESPONSE;
     }
   }

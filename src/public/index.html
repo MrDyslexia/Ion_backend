@@ -464,6 +464,7 @@ function ttsStop() {
   ttsPlaying = false;
 }
 
+
 /* ─────────────────────────────────────────────────────────────────────────
    INIT: fetch stats → get defaultPatientId → auto-identify
 ───────────────────────────────────────────────────────────────────────── */
@@ -741,7 +742,7 @@ function renderTranscription(text, isFinal) {
     const div=document.createElement('div'), t=text.toLowerCase();
     if(t.includes('hola alma'))
       {div.className='msg-cmd-on'; div.innerHTML=`▶ <strong>Activación:</strong> ${text}`;}
-    else if(['gracias alma','detente alma','adiós alma','hasta luego alma'].some(c=>t.includes(c)))
+    else if(['gracias alma','detente alma','adiós alma','hasta luego alma','chao alma','hasta pronto alma'].some(c=>t.includes(c)))
       {div.className='msg-cmd-off'; div.innerHTML=`■ <strong>Fin:</strong> ${text}`;}
     else if(t.includes('ok alma')||t.includes('oye alma'))
       {div.className='msg-cmd-on'; div.innerHTML=`◈ <strong>Ok ALMA:</strong> ${text}`;}

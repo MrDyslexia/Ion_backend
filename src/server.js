@@ -188,7 +188,9 @@ async function executeTool(name, args, ctx) {
         const triggerContent = ctx._testTriggerContent;
         ctx._testTriggerContent = null;
         let triggerRemoved = false;
+        const mainSystemPrompt = ctx.dialog[0]; // preservar el system prompt principal
         ctx.dialog = ctx.dialog.filter(m => {
+          if (m === mainSystemPrompt) return true; // nunca eliminar el system prompt principal
           if (m.role === 'tool')      return false;
           if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) return false;
           if (m.role === 'system'    && m.content?.includes('conduct_test'))    return false;
@@ -206,13 +208,42 @@ async function executeTool(name, args, ctx) {
         });
         ctx.testDoneThisSession = true;
         ctx.activeRunner = null;
+        ctx._testJustStarted = false;
 
-        ctx.dialog.push({ role: 'system', content: 'La evaluación cognitiva 6CIT acaba de completarse con éxito. Retoma la conversación normal.' });
+        // "adiós alma" durante el test → despedida completa, no continuar conversación
+        if (ctx._byeRequestedDuringTest) {
+          ctx._byeRequestedDuringTest = false;
+          ctx.conversationActive = false;
+          ctx.isProcessingTurn   = false;
+          ctx._byeCooldown       = true;
+          const byeText = '¡Hasta pronto! Que tenga un buen día.';
+          ctx.socket.emit('assistant_text',      { delta: byeText });
+          ctx.socket.emit('assistant_text_done', { text: byeText });
+          ctx.socket.emit('test_finished');
+          synthesizeSpeech(byeText).then(buf => {
+            if (buf) ctx.socket.emit('tts_audio', { audio: buf.toString('base64'), mimeType: 'audio/wav' });
+          }).catch(console.error);
+          setTimeout(() => {
+            if (!ctx) return;
+            const sp = ctx.dialog.find(m => m.role === 'system');
+            if (sp) ctx.dialog = [{ role: 'system', content: sp.content }];
+            ctx.testDoneThisSession = false;
+            ctx._byeCooldown = false;
+          }, 4000);
+          return;
+        }
 
-        const resumeText = result.status === 'cancelled'
-          ? 'Hemos detenido la evaluación. Muchas gracias por su participación. ¿Hay algo en lo que pueda ayudarle?'
-          : 'Hemos terminado la evaluación. Muchas gracias por su participación. ¿Tiene alguna pregunta?';
+        // Bloquear STT mientras el TTS post-test se sintetiza y reproduce
+        ctx.isProcessingTurn = true;
 
+        const noAnswers = Object.keys(result.answers || {}).length === 0;
+        const resumeText = result.status === 'cancelled' && noAnswers
+          ? 'No hay ningún problema. Estaré aquí cuando quiera. ¿Cómo se siente?'
+          : result.status === 'cancelled'
+            ? 'Hemos detenido la evaluación. No se preocupe en absoluto, hizo un gran esfuerzo. ¿Cómo se siente?'
+            : 'Hemos terminado. Muchas gracias por su tiempo y su esfuerzo, lo hizo muy bien. ¿Cómo se siente?';
+
+        ctx.dialog.push({ role: 'system', content: 'La evaluación cognitiva 6CIT acaba de completarse. Retoma la conversación normal.' });
         ctx.socket.emit('assistant_text',      { delta: resumeText });
         ctx.socket.emit('assistant_text_done', { text: resumeText });
         ctx.dialog.push({ role: 'assistant', content: resumeText });
@@ -222,23 +253,24 @@ async function executeTool(name, args, ctx) {
           ctx.socket.emit('conversation_mode_state', { listeningForTurn: false, waitingForWakeWord: true });
         }
         synthesizeSpeech(resumeText).then(buf => {
-          if (buf) ctx.socket.emit('tts_audio', { audio: buf.toString('base64'), mimeType: 'audio/wav' });
-        }).catch(e => console.error('❌ TTS post-test:', e.message));
+          if (buf) {
+            ctx.speakingUntil = Date.now() + estimateWavDurationMs(buf);
+            ctx.socket.emit('tts_audio', { audio: buf.toString('base64'), mimeType: 'audio/wav' });
+          }
+        }).catch(e => console.error('❌ TTS post-test:', e.message))
+          .finally(() => { if (ctx) ctx.isProcessingTurn = false; });
 
       } catch (e) {
         if (e instanceof CancelledError) {
+          // run() atrapa CancelledError internamente — este path no debería alcanzarse,
+          // pero se mantiene como red de seguridad para errores inesperados.
           ctx.activeRunner = null;
           ctx.testDoneThisSession = true;
-          ctx.conversationActive  = true;
-          ctx.dialog.push({ role: 'system', content: 'La evaluación cognitiva fue detenida por el paciente. Retoma la conversación.' });
-          const cancelText = 'Hemos detenido la evaluación. No se preocupe. ¿Hay algo en lo que pueda ayudarle?';
-          ctx.socket.emit('assistant_text',      { delta: cancelText });
-          ctx.socket.emit('assistant_text_done', { text: cancelText });
-          ctx.dialog.push({ role: 'assistant', content: cancelText });
+          ctx._testJustStarted = false;
+          ctx._byeRequestedDuringTest = false;
+          ctx.conversationActive = true;
+          ctx.isProcessingTurn   = false;
           ctx.socket.emit('test_finished');
-          synthesizeSpeech(cancelText).then(buf => {
-            if (buf) ctx.socket.emit('tts_audio', { audio: buf.toString('base64'), mimeType: 'audio/wav' });
-          }).catch(console.error);
         } else {
           console.error(`❌ [Test] ${testId} error inesperado:`, e.message);
           ctx.activeRunner = null;
@@ -272,6 +304,21 @@ const MANUAL_TEST_RE = [
 function looksLikeManualTest(text) {
   if (!text) return false;
   return MANUAL_TEST_RE.some(p => p.test(text));
+}
+
+/** ======================= Helpers de audio ======================= */
+function estimateWavDurationMs(buf, paddingMs = 700) {
+  if (!buf || buf.length < 44) return paddingMs;
+  try {
+    const sampleRate = buf.readUInt32LE(24);
+    const channels   = buf.readUInt16LE(22);
+    const bitDepth   = buf.readUInt16LE(34);
+    const dataSize   = buf.readUInt32LE(40);
+    if (sampleRate > 0 && channels > 0 && bitDepth > 0) {
+      return Math.ceil((dataSize / (sampleRate * channels * (bitDepth / 8))) * 1000) + paddingMs;
+    }
+  } catch {}
+  return paddingMs;
 }
 
 /** ======================= LLM streaming + tool use ======================= */
@@ -325,6 +372,11 @@ async function dispatchToolCall(toolCall, dialog, sessionId, ctx) {
 }
 
 async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
+  if (ctx?.isProcessingTurn) {
+    console.log('⏸ [LLM ] Turno en proceso — STT descartado');
+    return '';
+  }
+  if (ctx) ctx.isProcessingTurn = true;
   socket.emit('assistant_status', { status: 'thinking' });
   const _t0llm = Date.now();
 
@@ -361,6 +413,13 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
 
     if (toolCall) {
       await dispatchToolCall(toolCall, dialog, sessionId, ctx);
+      // Si el tool inició un test, no llamar LLM de nuevo — el runner toma control
+      if (ctx?._testJustStarted) {
+        socket.emit('assistant_text_done', { text: '' });
+        socket.emit('assistant_status',    { status: 'idle' });
+        if (ctx) ctx.isProcessingTurn = false;
+        return '';
+      }
       continue;
     }
 
@@ -385,7 +444,6 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
   }
 
   socket.emit('assistant_text_done', { text: fullResponse });
-  socket.emit('assistant_status',    { status: 'idle' });
 
   // ── Comprimir contexto si supera umbral ──
   const now60 = Date.now();
@@ -404,6 +462,7 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
     if (ctx?.currentTurnMarks) {
       ctx.currentTurnMarks.tts_start = Date.now();
     }
+    console.log(`🔊 [TTS ] Síntesis iniciada (${fullResponse.length} chars)`);
     synthesizeSpeech(fullResponse).then(audioBuf => {
       // ── CIERRE del turno actual: guardar marks ──
       if (ctx?.currentTurnMarks?.asr_final && ctx?.currentTurnMarks?.llm_first_char) {
@@ -419,13 +478,24 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
         });
         ctx.currentTurnMarks = null;
       }
-      if (audioBuf) socket.emit('tts_audio', { audio: audioBuf.toString('base64'), mimeType: 'audio/wav' });
+      if (audioBuf) {
+        console.log(`🔊 [TTS ] Audio emitido: ${audioBuf.length} bytes`);
+        if (ctx) ctx.speakingUntil = Date.now() + estimateWavDurationMs(audioBuf);
+        socket.emit('tts_audio', { audio: audioBuf.toString('base64'), mimeType: 'audio/wav' });
+      } else {
+        console.warn('⚠️  [TTS ] Síntesis devolvió null — sin audio');
+      }
     }).catch(e => {
-      ctx.currentTurnMarks = null; // limpiar aunque falle TTS
+      ctx.currentTurnMarks = null;
       console.error('❌ TTS pipeline:', e.message);
+    }).finally(() => {
+      if (ctx) ctx.isProcessingTurn = false;
+      socket.emit('assistant_status', { status: 'idle' });
     });
   } else {
-    ctx.currentTurnMarks = null; // limpiar si no hay TTS
+    ctx.currentTurnMarks = null;
+    if (ctx) ctx.isProcessingTurn = false;
+    socket.emit('assistant_status', { status: 'idle' });
   }
 
   return fullResponse;
@@ -475,7 +545,8 @@ class SessionContext {
     this.activeRunner       = null;
     this._testJustStarted   = false;
     this.testDoneThisSession  = false;
-    this._byeCooldown         = false;
+    this._byeCooldown               = false;
+    this._byeRequestedDuringTest    = false;
     this._lastCompressed      = 0;
     this.conversationMode  = 'always_on';
     this.listeningForTurn  = false;
@@ -486,6 +557,10 @@ class SessionContext {
     this.vadSilenceTimer    = null;
     this.vadSilenceMs       = VAD_SILENCE_MS;
     this.vadSpeechThreshold = VAD_SPEECH_THRESHOLD;
+
+    // ── Anti-solapamiento ───────────────────────────────────────────────────
+    this.isProcessingTurn = false; // true mientras LLM+TTS pipeline está activo
+    this.speakingUntil    = 0;     // timestamp hasta el que el STT queda silenciado (TTS sonando)
 
     // ── Grabación por conversación ──────────────────────────────────────────
     this.convWavWriter    = null;   // wav.FileWriter activo solo entre hola/adiós
@@ -588,6 +663,23 @@ class SessionContext {
     }
   }
 
+  // Arma (o rearma) el timer de silencio VAD. Cualquier fuente puede llamarlo:
+  // energía de audio detectada en processVAD, o nuevo fragmento STT desde el runner.
+  _armVadSilenceTimer() {
+    clearTimeout(this.vadSilenceTimer);
+    this.vadSilenceTimer = setTimeout(() => {
+      if (!this.vadEnabled) return;
+      this.vadIsSpeaking = false;
+      this.activeRunner?.onVadSilence?.();
+    }, this.vadSilenceMs);
+  }
+
+  // Llamado desde TestRunner cuando llega un nuevo fragmento STT en modo VAD.
+  resetVadSilenceTimer() {
+    if (!this.vadEnabled) return;
+    this._armVadSilenceTimer();
+  }
+
   processVAD(int16Array) {
     if (!this.vadEnabled || !this.activeRunner) return;
     let sum = 0;
@@ -598,13 +690,7 @@ class SessionContext {
         this.vadIsSpeaking = true;
         this.activeRunner.onVadSpeech?.();
       }
-      clearTimeout(this.vadSilenceTimer);
-      this.vadSilenceTimer = setTimeout(() => {
-        if (this.vadEnabled && this.vadIsSpeaking) {
-          this.vadIsSpeaking = false;
-          this.activeRunner?.onVadSilence?.();
-        }
-      }, this.vadSilenceMs);
+      this._armVadSilenceTimer();
     }
   }
 
@@ -653,7 +739,7 @@ function processVoiceCommands(text, ctx) {
     return { isCommand: false, action: 'continue_conversation' };
   }
 
-  const stopCmds = ['gracias alma', 'detente alma', 'adiós alma', 'adios alma', 'hasta luego alma', 'para alma'];
+  const stopCmds = ['gracias alma', 'detente alma', 'adiós alma', 'adios alma', 'hasta luego alma', 'para alma', 'chao alma', 'hasta pronto alma'];
   if (stopCmds.some(c => t.includes(c)) && ctx.conversationActive) {
     ctx.conversationActive = false;
     ctx.userBuffer = '';
@@ -710,9 +796,14 @@ function applyNoiseGate(int16, audioBuf, threshold = NOISE_GATE_THRESHOLD) {
 
 const ENGLISH_NOISE_RE = /\b(want|try|the\b|and\b|with|have|from|they|what|when|where|would|should|could|their|there|here|just|like|that|this|then|than|been|some|more|also|only|back|come|look|make|know|good|much|need|many|well|very|after|said|even|most|made|take|work|call|thing|place|case|week|year|time|your|our\b|his\b|her\b|him\b|its\b)\b/gi;
 
+const CONV_AFFIRMATIVE_RE = /^(sí|si|no)\s*$/i;
+
 function isConversationNoise(text) {
   const t = (text || '').trim();
   if (!t) return true;
+
+  // "sí"/"si"/"no" siempre son válidas — bypass antes del filtro de longitud
+  if (CONV_AFFIRMATIVE_RE.test(t)) return false;
 
   // Demasiado corto para ser una frase real
   if (t.length < MIN_TRANSCRIPT_LENGTH) return true;
@@ -855,9 +946,27 @@ io.on('connection', socket => {
       console.log(`⏱️  [STT ] "${txt.slice(0, 40)}" → ${Date.now() - _t0stt}ms`);
       socket.emit('transcription', { text: txt, isFinal: true, confidence: r.confidence || 0 });
 
-      if (ctx.activeRunner) { ctx.activeRunner.resolveSTT(txt); return; }
+      // Stop commands ("adiós alma", etc.) bypass TTS gate and test runner
+      const STOP_CMDS_BYPASS = ['gracias alma','detente alma','adiós alma','adios alma',
+                                 'hasta luego alma','para alma','chao alma','hasta pronto alma'];
+      const isHardStop = ctx.conversationActive &&
+        STOP_CMDS_BYPASS.some(c => txt.toLowerCase().includes(c));
+
+      if (ctx.activeRunner) {
+        if (isHardStop) {
+          console.log(`🛑 [Conv] Stop command durante test: "${txt.slice(0,30)}"`);
+          ctx._byeRequestedDuringTest = true;
+          ctx.activeRunner.destroy();
+          return;
+        }
+        ctx.activeRunner.resolveSTT(txt); return;
+      }
       if (ctx._byeCooldown) {
         console.log(`🔇 [Conv] STT bloqueado (bye cooldown): "${txt.slice(0,30)}"`);
+        return;
+      }
+      if (!isHardStop && (ctx.isProcessingTurn || Date.now() < ctx.speakingUntil)) {
+        console.log(`🔇 [Conv] STT bloqueado (${ctx.isProcessingTurn ? 'LLM activo' : 'TTS sonando'}): "${txt.slice(0,30)}"`);
         return;
       }
 
@@ -896,7 +1005,24 @@ io.on('connection', socket => {
     const txt = (ctx.voskRec.finalResult().text || '').trim();
     if (!txt) return;
     socket.emit('transcription', { text: txt, isFinal: true });
-    if (ctx.activeRunner) { ctx.activeRunner.resolveSTT(txt); return; }
+    const STOP_CMDS_BYPASS_F = ['gracias alma','detente alma','adiós alma','adios alma',
+                                  'hasta luego alma','para alma','chao alma','hasta pronto alma'];
+    const isHardStopF = ctx.conversationActive &&
+      STOP_CMDS_BYPASS_F.some(c => txt.toLowerCase().includes(c));
+
+    if (ctx.activeRunner) {
+      if (isHardStopF) {
+        console.log(`🛑 [Conv] Stop command (final) durante test: "${txt.slice(0,30)}"`);
+        ctx._byeRequestedDuringTest = true;
+        ctx.activeRunner.destroy();
+        return;
+      }
+      ctx.activeRunner.resolveSTT(txt); return;
+    }
+    if (!isHardStopF && (ctx.isProcessingTurn || Date.now() < ctx.speakingUntil)) {
+      console.log(`🔇 [Conv] Final STT bloqueado (${ctx.isProcessingTurn ? 'LLM activo' : 'TTS sonando'}): "${txt.slice(0,30)}"`);
+      return;
+    }
     if (ctx.conversationActive) {
       if (ctx.conversationMode === 'wake_per_turn') {
         if (ctx.listeningForTurn && ctx.turnBuffer.trim()) {
@@ -950,6 +1076,12 @@ io.on('connection', socket => {
     ctx.conversationMode = mode;
     socket.emit('conversation_mode_changed', { mode });
     console.log(`🔀 [Mode] ${mode} — ${ctx.patient?.name}`);
+  });
+
+  // Cliente notifica que terminó de reproducir el audio TTS → liberar gate inmediatamente
+  socket.on('tts_playback_ended', () => {
+    const ctx = activeSessions.get(socket.id);
+    if (ctx) ctx.speakingUntil = 0;
   });
 
   const statsInterval = setInterval(() => {
