@@ -77,8 +77,13 @@ function looksLikeMonths(text) {
  * ¿El texto es una respuesta válida a la pregunta?
  * Retorna: 'valid' | 'noise'
  */
+const AFFIRMATIVE_RE = /^(sí|si|no)\s*$/i;
+
 async function isValidResponse(questionContext, transcribedText) {
   if (!transcribedText || transcribedText.trim().length < 2) return 'noise';
+
+  // "sí"/"si"/"no" siempre son respuestas válidas — no pasar al LLM
+  if (AFFIRMATIVE_RE.test(transcribedText.trim())) return 'valid';
 
   // Bypass para address_recall: si contiene fragmentos de dirección, es válido
   if (questionContext && questionContext.toLowerCase().includes('direcci') && looksLikeAddress(transcribedText)) {
@@ -255,7 +260,12 @@ function evaluateMonthsDeterministic(text) {
 const CANCEL_KEYWORDS = [
   'no quiero', 'no deseo', 'para', 'detente', 'basta', 'suficiente',
   'cancela', 'cancele', 'termina', 'termínalo', 'ya no', 'me cansé',
-  'estoy cansado', 'no puedo', 'déjame', 'dejame', 'quieto', 'stop'
+  'estoy cansado', 'no puedo', 'déjame', 'dejame', 'quieto', 'stop',
+  'quiero salir', 'quiero parar', 'quiero detener', 'quiero terminar',
+  'salir del test', 'salir de la evaluacion', 'salir de la evaluación',
+  'parar el test', 'terminar el test',
+  'no quiero continuar', 'no quiero seguir', 'no quiero hacer',
+  'no puedo continuar', 'no puedo seguir'
 ];
 
 async function isCancelIntent(text) {

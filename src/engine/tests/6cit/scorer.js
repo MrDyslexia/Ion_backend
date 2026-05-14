@@ -102,11 +102,18 @@ function scoreBinary(question, answer) {
   }
 
   if (question.id === 'month') {
-    const idx      = new Date().getMonth();
-    const name     = normalize(MONTHS_ES[idx]);
-    const num      = String(idx + 1);
-    const numRegex = new RegExp(`\\b${num}\\b`);
-    correct = text.includes(name) || numRegex.test(text);
+    const idx        = new Date().getMonth();
+    const name       = normalize(MONTHS_ES[idx]);
+    const num        = String(idx + 1);
+    const numRegex   = new RegExp(`\\b${num}\\b`);
+    const mentioned  = MONTHS_ES.filter(m => text.includes(normalize(m)));
+    if (mentioned.length >= 3) {
+      // Paciente lista meses esperando acertar → no puntúa
+      correct = false;
+      console.log(`📍 [Scorer] month — fishing detectado (${mentioned.length} meses) → ❌`);
+    } else {
+      correct = text.includes(name) || numRegex.test(text);
+    }
   }
 
   console.log(`📍 [Scorer] ${question.id} — texto: "${answer.text?.slice(0,40)}" → ${correct ? '✅ correcto' : '❌ incorrecto'}`);
@@ -132,33 +139,45 @@ function scoreTime(question, answer) {
     'treinta':30,'cuarenta':40,'cincuenta':50
   };
 
-  const timeMatch = text.match(/(\d{1,2})(?::(\d{2}))?/);
-  if (timeMatch) {
-    mentionedHour   = parseInt(timeMatch[1], 10);
-    mentionedMinute = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
-    if (text.includes('media'))                             mentionedMinute = 30;
-    if (/\bcuarto\b/.test(text) || /\bquince\b/.test(text)) mentionedMinute = 15;
-  } else {
-    // Usar límites de palabra para evitar que "ocho" coincida dentro de "dieciocho"
-    hourWords.forEach((w, i) => {
-      if (new RegExp(`\\b${w}\\b`).test(text)) mentionedHour = i + 1;
-    });
+  // Formato inverso: "20 para las 8" = 7:40, "cuarto para las 5" = 4:45
+  const MINS_BEFORE = { 'cinco':5,'diez':10,'cuarto':15,'quince':15,'veinte':20,'veinticinco':25,'media':30,'treinta':30 };
+  const paraRE = /\b(\d+|cinco|diez|cuarto|quince|veinte|veinticinco|media|treinta)\s+para\s+las?\s+(\d+)/;
+  const paraWordsRE = /\b(\d+|cinco|diez|cuarto|quince|veinte|veinticinco|media|treinta)\s+para\s+las?\s+(una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)/;
+  const paraMatch = text.match(paraRE) || text.match(paraWordsRE);
+  if (paraMatch) {
+    const minBefore = parseInt(paraMatch[1]) || MINS_BEFORE[paraMatch[1]] || 0;
+    const refHour   = parseInt(paraMatch[2]) || (hourWords.indexOf(paraMatch[2]) + 1) || 0;
+    if (minBefore > 0 && minBefore < 60 && refHour >= 1 && refHour <= 12) {
+      mentionedHour   = refHour > 1 ? refHour - 1 : 12;
+      mentionedMinute = 60 - minBefore;
+    }
+  }
 
-    // Extraer minutos desde palabras numéricas que aparezcan después de la hora
-    // Ej: "cuatro dieciocho" → hora=4, minutos=18
-    if (mentionedHour !== null) {
-      // Buscar palabras de minutos que NO sean la misma que la hora
-      const hourWord = hourWords[mentionedHour - 1];
-      for (const [word, val] of Object.entries(minuteWords)) {
-        if (word !== hourWord && new RegExp(`\\b${word}\\b`).test(text)) {
-          mentionedMinute = val;
-          break;
+  if (mentionedHour === null) {
+    const timeMatch = text.match(/(\d{1,2})(?::(\d{2}))?/);
+    if (timeMatch) {
+      mentionedHour   = parseInt(timeMatch[1], 10);
+      mentionedMinute = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+      if (text.includes('media'))                              mentionedMinute = 30;
+      if (/\bcuarto\b/.test(text) || /\bquince\b/.test(text)) mentionedMinute = 15;
+    } else {
+      hourWords.forEach((w, i) => {
+        if (new RegExp(`\\b${w}\\b`).test(text)) mentionedHour = i + 1;
+      });
+
+      if (mentionedHour !== null) {
+        const hourWord = hourWords[mentionedHour - 1];
+        for (const [word, val] of Object.entries(minuteWords)) {
+          if (word !== hourWord && new RegExp(`\\b${word}\\b`).test(text)) {
+            mentionedMinute = val;
+            break;
+          }
         }
       }
-    }
 
-    if (/\bmedia\b/.test(text))                              mentionedMinute = 30;
-    if (/\bcuarto\b/.test(text) || /\bquince\b/.test(text)) mentionedMinute = 15;
+      if (/\bmedia\b/.test(text))                              mentionedMinute = 30;
+      if (/\bcuarto\b/.test(text) || /\bquince\b/.test(text)) mentionedMinute = 15;
+    }
   }
 
   if (mentionedHour === null) return { score: question.maxScore, detail: 'no_se_pudo_interpretar' };
@@ -183,71 +202,85 @@ function scorePartial(question, answer) {
   return                        { score: question.maxScore,         detail: 'fallido' };
 }
 
+// ── Conversión número → palabras (español) ───────────────────────────────────
+
+const DIGIT_WORDS = ['cero','uno','dos','tres','cuatro','cinco','seis','siete','ocho','nueve'];
+
+const _ONES = [
+  '','uno','dos','tres','cuatro','cinco','seis','siete','ocho','nueve',
+  'diez','once','doce','trece','catorce','quince',
+  'dieciseis','diecisiete','dieciocho','diecinueve',
+  'veinte','veintiuno','veintidos','veintitres','veinticuatro',
+  'veinticinco','veintiseis','veintisiete','veintiocho','veintinueve'
+];
+const _TENS = ['','','veinte','treinta','cuarenta','cincuenta','sesenta','setenta','ochenta','noventa'];
+const _HUND = ['','ciento','doscientos','trescientos','cuatrocientos','quinientos',
+               'seiscientos','setecientos','ochocientos','novecientos'];
+
+function numberToWordsFull(n) {
+  if (!Number.isInteger(n) || n < 0 || n > 9999) return null;
+  if (n === 0) return 'cero';
+  const parts = [];
+  let rem = n;
+  if (rem >= 1000) {
+    const m = Math.floor(rem / 1000);
+    parts.push(m === 1 ? 'mil' : `${_ONES[m]} mil`);
+    rem %= 1000;
+  }
+  if (rem === 100) { parts.push('cien'); rem = 0; }
+  else if (rem >= 100) { parts.push(_HUND[Math.floor(rem / 100)]); rem %= 100; }
+  if (rem >= 30) {
+    const dec = Math.floor(rem / 10), uni = rem % 10;
+    parts.push(uni > 0 ? `${_TENS[dec]} y ${_ONES[uni]}` : _TENS[dec]);
+  } else if (rem > 0) { parts.push(_ONES[rem]); }
+  return parts.join(' ') || null;
+}
+
 /**
  * Genera todas las variantes orales posibles de una cadena de dígitos.
- * "1373" → ["1373", "trece setenta y tres", "mil trescientos setenta y tres",
- *            "trece setenta tres", ...]
+ * "1373":
+ *   literal         → "1373"
+ *   completo        → "mil trescientos setenta y tres"
+ *   dígito a dígito → "uno tres siete tres"
+ *   pares 2+2       → "trece setenta y tres" / "trece setenta tres"
+ *   3+1             → "ciento treinta y siete tres"
+ *   1+3             → "uno trescientos setenta y tres"
  */
 function numericVariants(str) {
   const n = parseInt(str, 10);
   if (isNaN(n)) return [normalize(str)];
 
-  const variants = [str]; // dígitos literales
+  const raw = new Set([str]);
 
-  // Variante "cifras compuestas" (como se lee una dirección en Chile):
-  // 1373 → "trece setenta y tres"
-  const hundreds = Math.floor(n / 100);   // 13
-  const tens     = n % 100;               // 73
+  // Completo: "mil trescientos setenta y tres"
+  const full = numberToWordsFull(n);
+  if (full) raw.add(full);
 
-  const tensWords = {
-    1:'uno',2:'dos',3:'tres',4:'cuatro',5:'cinco',6:'seis',7:'siete',
-    8:'ocho',9:'nueve',10:'diez',11:'once',12:'doce',13:'trece',14:'catorce',
-    15:'quince',16:'dieciseis',17:'diecisiete',18:'dieciocho',19:'diecinueve',
-    20:'veinte',21:'veintiuno',22:'veintidos',23:'veintitres',24:'veinticuatro',
-    25:'veinticinco',26:'veintiseis',27:'veintisiete',28:'veintiocho',29:'veintinueve',
-    30:'treinta',40:'cuarenta',50:'cincuenta',60:'sesenta',70:'setenta',
-    73:'setenta y tres',80:'ochenta',90:'noventa'
-  };
+  // Dígito a dígito: "uno tres siete tres"
+  const digits = [...str].map(d => DIGIT_WORDS[parseInt(d)]);
+  if (digits.every(Boolean)) raw.add(digits.join(' '));
 
-  function tensToWord(t) {
-    if (tensWords[t]) return tensWords[t];
-    const dec = Math.floor(t / 10) * 10;
-    const uni = t % 10;
-    const decW = tensWords[dec];
-    const uniW = tensWords[uni];
-    if (decW && uniW) return `${decW} y ${uniW}`;
-    return null;
+  if (str.length === 4) {
+    // 2+2: "trece setenta y tres" y sin "y": "trece setenta tres"
+    const aW = numberToWordsFull(parseInt(str.slice(0, 2)));
+    const bW = numberToWordsFull(parseInt(str.slice(2)));
+    if (aW && bW) {
+      raw.add(`${aW} ${bW}`);
+      raw.add(`${aW} ${bW}`.replace(/ y /g, ' ')); // sin "y"
+    }
+
+    // 3+1: "ciento treinta y siete tres"
+    const cW = numberToWordsFull(parseInt(str.slice(0, 3)));
+    const dW = DIGIT_WORDS[parseInt(str[3])];
+    if (cW && dW) raw.add(`${cW} ${dW}`);
+
+    // 1+3: "uno trescientos setenta y tres"
+    const eW = DIGIT_WORDS[parseInt(str[0])];
+    const fW = numberToWordsFull(parseInt(str.slice(1)));
+    if (eW && fW) raw.add(`${eW} ${fW}`);
   }
 
-  // "trece setenta y tres" (leer en pares de dígitos)
-  const hundW = tensToWord(hundreds);
-  const tenW  = tensToWord(tens);
-  if (hundW && tenW) {
-    variants.push(`${hundW} ${tenW}`);
-    // con "y" entre ellos también por si acaso
-  }
-  if (hundW)           variants.push(hundW);
-  if (tenW)            variants.push(tenW);
-
-  // Variante estándar en palabras: "mil trescientos setenta y tres"
-  const centenas = {
-    100:'cien',200:'doscientos',300:'trescientos',400:'cuatrocientos',500:'quinientos',
-    600:'seiscientos',700:'setecientos',800:'ochocientos',900:'novecientos'
-  };
-  if (n >= 1000) {
-    const miles = Math.floor(n / 1000);
-    const resto = n % 1000;
-    const milesW = miles === 1 ? 'mil' : `${tensToWord(miles) || miles} mil`;
-    const centena = Math.floor(resto / 100) * 100;
-    const tensResto = resto % 100;
-    const parts = [milesW];
-    if (centena && centenas[centena]) parts.push(centenas[centena]);
-    const tensRestoW = tensToWord(tensResto);
-    if (tensRestoW) parts.push(tensRestoW);
-    variants.push(parts.join(' '));
-  }
-
-  return variants.map(v => normalize(String(v)));
+  return [...raw].map(v => normalize(String(v)));
 }
 
 function scoreAddress(question, answer) {

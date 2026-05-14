@@ -34,7 +34,7 @@ const QUESTIONS = [
   {
     id:        'address_register',
     type:      'memory_register',
-    tts:       `Le voy a decir una dirección para que la recuerde. Escuche con atención: ${ADDRESS.full}. ¿Puede repetirla?`,
+    tts:       `Le voy a decir una dirección para que la recuerde. Escuche con atención: ${ADDRESS.full}.`,
     maxScore:  0,
     scoreMode: 'none',
     meta:      { address: ADDRESS }
@@ -66,7 +66,7 @@ const QUESTIONS = [
   {
     id:        'address_recall',
     type:      'question',
-    tts:       '¿Recuerda la dirección que le pedí memorizar al principio?',
+    tts:       '¿Recuerda la dirección que le pedí memorizar al principio?. ¿Puede repetirla ahora?',
     maxScore:  10,
     scoreMode: 'address',
     meta:      { address: ADDRESS }
