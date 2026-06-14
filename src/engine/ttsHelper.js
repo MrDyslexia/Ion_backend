@@ -101,4 +101,26 @@ async function synthesizeSpeech(text) {
   }
 }
 
-module.exports = { synthesizeSpeech, normalizeTTSText };
+async function synthesizeSpeechWithMetrics(text) {
+  const normalized = normalizeTTSText(text);
+  if (!normalized) return { buf: null, synthMs: null };
+
+  const t0 = Date.now();
+  try {
+    const resp = await fetch(`${TTS_URL}/synthesize`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ text: normalized, language: 'es' })
+    });
+    if (!resp.ok) throw new Error(`TTS HTTP ${resp.status}`);
+    const buf     = Buffer.from(await resp.arrayBuffer());
+    const synthMs = Date.now() - t0;
+    console.log(`🔊 [TTS ] Síntesis completada: ${synthMs}ms (${buf.length} bytes)`);
+    return { buf, synthMs };
+  } catch (e) {
+    console.error('❌ ttsHelper:', e.message);
+    return { buf: null, synthMs: null };
+  }
+}
+
+module.exports = { synthesizeSpeech, synthesizeSpeechWithMetrics, normalizeTTSText };

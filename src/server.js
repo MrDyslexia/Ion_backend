@@ -13,7 +13,7 @@ const {
 
 const { TestRunner, CancelledError } = require('./engine/TestRunner');
 const { getTest }                    = require('./engine/tests/registry');
-const { synthesizeSpeech }           = require('./engine/ttsHelper');
+const { synthesizeSpeech, synthesizeSpeechWithMetrics } = require('./engine/ttsHelper');
 
 const app    = express();
 const server = http.createServer(app);
@@ -220,8 +220,8 @@ async function executeTool(name, args, ctx) {
           ctx.socket.emit('assistant_text',      { delta: byeText });
           ctx.socket.emit('assistant_text_done', { text: byeText });
           ctx.socket.emit('test_finished');
-          synthesizeSpeech(byeText).then(buf => {
-            if (buf) ctx.socket.emit('tts_audio', { audio: buf.toString('base64'), mimeType: 'audio/wav' });
+          synthesizeSpeechWithMetrics(byeText).then(({ buf: audioBuf, synthMs }) => {
+            if (audioBuf) ctx.socket.emit('tts_audio', { audio: audioBuf.toString('base64'), mimeType: 'audio/wav' });
           }).catch(console.error);
           setTimeout(() => {
             if (!ctx) return;
@@ -252,10 +252,10 @@ async function executeTool(name, args, ctx) {
         if (ctx.conversationMode === 'wake_per_turn') {
           ctx.socket.emit('conversation_mode_state', { listeningForTurn: false, waitingForWakeWord: true });
         }
-        synthesizeSpeech(resumeText).then(buf => {
-          if (buf) {
-            ctx.speakingUntil = Date.now() + estimateWavDurationMs(buf);
-            ctx.socket.emit('tts_audio', { audio: buf.toString('base64'), mimeType: 'audio/wav' });
+        synthesizeSpeechWithMetrics(resumeText).then(({ buf: audioBuf, synthMs }) => {
+          if (audioBuf) {
+            ctx.speakingUntil = Date.now() + estimateWavDurationMs(audioBuf);
+            ctx.socket.emit('tts_audio', { audio: audioBuf.toString('base64'), mimeType: 'audio/wav' });
           }
         }).catch(e => console.error('❌ TTS post-test:', e.message))
           .finally(() => { if (ctx) ctx.isProcessingTurn = false; });
@@ -383,6 +383,10 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
   const MAX_ITER = 3;
   let iter = 0, fullResponse = '';
 
+  const _lastLLMCall = ctx?._lastLLMCallAt || 0;
+  const llmColdStart = (Date.now() - _lastLLMCall) > 30000;
+  if (ctx) ctx._lastLLMCallAt = Date.now();
+
   while (iter < MAX_ITER) {
     iter++;
     const body = {
@@ -406,6 +410,7 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
     const onFirstToken = (ts) => {
       if (ctx?.currentTurnMarks && !ctx.currentTurnMarks.llm_first_char) {
         ctx.currentTurnMarks.llm_first_char = ts;
+        ctx.currentTurnMarks.llm_cold_start = llmColdStart;
       }
     };
 
@@ -463,18 +468,28 @@ async function askLLM(socket, dialog, sessionId, patient, ctx = null) {
       ctx.currentTurnMarks.tts_start = Date.now();
     }
     console.log(`🔊 [TTS ] Síntesis iniciada (${fullResponse.length} chars)`);
-    synthesizeSpeech(fullResponse).then(audioBuf => {
+    synthesizeSpeechWithMetrics(fullResponse).then(({ buf: audioBuf, synthMs }) => {
       // ── CIERRE del turno actual: guardar marks ──
+      if (ctx?.currentTurnMarks) {
+        ctx.currentTurnMarks.tts_emit              = Date.now();
+        ctx.currentTurnMarks.tts_synthesis_ms      = synthMs;
+        ctx.currentTurnMarks.tts_audio_duration_ms = estimateWavDurationMs(audioBuf);
+      }
       if (ctx?.currentTurnMarks?.asr_final && ctx?.currentTurnMarks?.llm_first_char) {
         const m = ctx.currentTurnMarks;
         ctx.convTurns.push({
-          turno:          ctx.convTurns.length + 1,
-          text:           m.text,
-          asr_final:      m.asr_final,
-          llm_first_char: m.llm_first_char,
-          tts_start:      m.tts_start,
-          L_llm_ms:       m.llm_first_char - m.asr_final,
-          L_tts_ms:       m.tts_start ? m.tts_start - m.asr_final : null,
+          turno:                ctx.convTurns.length + 1,
+          text:                 m.text,
+          asr_final:            m.asr_final,
+          llm_first_char:       m.llm_first_char,
+          tts_start:            m.tts_start,
+          L_llm_ms:             m.llm_first_char - m.asr_final,
+          L_tts_ms:             m.tts_start ? m.tts_start - m.asr_final : null,
+          tts_emit:             m.tts_emit || null,
+          tts_synthesis_ms:     m.tts_synthesis_ms || null,
+          tts_audio_duration_ms: m.tts_audio_duration_ms || null,
+          llm_cold_start:       m.llm_cold_start || false,
+          L_e2e_ms:             m.tts_emit ? m.tts_emit - m.asr_final : null,
         });
         ctx.currentTurnMarks = null;
       }
@@ -854,8 +869,8 @@ function handleVoiceCommand(cmd, txt, ctx, socket) {
     socket.emit('assistant_text',      { delta: byeText });
     socket.emit('assistant_text_done', { text: byeText });
 
-    synthesizeSpeech(byeText).then(buf => {
-      if (buf) socket.emit('tts_audio', { audio: buf.toString('base64'), mimeType: 'audio/wav' });
+    synthesizeSpeechWithMetrics(byeText).then(({ buf: audioBuf, synthMs }) => {
+      if (audioBuf) socket.emit('tts_audio', { audio: audioBuf.toString('base64'), mimeType: 'audio/wav' });
     }).catch(console.error);
 
     // Cerrar grabación y guardar archivos (con pequeño delay para capturar audio de despedida)
@@ -944,6 +959,7 @@ io.on('connection', socket => {
       const txt = (r.text || '').trim();
       if (!txt) return;
       console.log(`⏱️  [STT ] "${txt.slice(0, 40)}" → ${Date.now() - _t0stt}ms`);
+      if (ctx.currentTurnMarks) ctx.currentTurnMarks.stt_ms = Date.now() - _t0stt;
       socket.emit('transcription', { text: txt, isFinal: true, confidence: r.confidence || 0 });
 
       // Stop commands ("adiós alma", etc.) bypass TTS gate and test runner
